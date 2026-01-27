@@ -54,6 +54,7 @@ for item in context:
 
 | Document | Purpose |
 |----------|---------|
+| **[DOCUMENTATION.md](DOCUMENTATION.md)** | Navigation guide - find what you need |
 | **[AGENT_MEMORY.md](AGENT_MEMORY.md)** | Guide for AI agents - API reference, scopes, integration examples |
 | **[CLAUDE.md](CLAUDE.md)** | Development philosophy - architecture, design decisions, best practices |
 | **[examples/](examples/)** | Real-world usage examples and integration patterns |

@@ -349,5 +349,6 @@ All 21 tests validate:
 ## See Also
 
 - [README.md](README.md) - Overview and features
+- [DOCUMENTATION.md](DOCUMENTATION.md) - Navigation guide for all docs
 - [CLAUDE.md](CLAUDE.md) - Architecture, philosophy, and development guide
 - [examples/](examples/) - Real-world integration examples
