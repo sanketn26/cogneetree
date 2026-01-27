@@ -1,6 +1,7 @@
 """Simple configuration - just defaults."""
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -14,6 +15,10 @@ class Config:
 
     # Embedding model (if semantic enabled)
     embedding_model: str = "microsoft/codebert-base"
+    openai_api_key: Optional[str] = None
+
+    # Storage settings (use ContextManager.with_storage() for custom backends)
+    storage_path: Optional[str] = None  # Optional: file path for future storage backends
 
     @classmethod
     def default(cls) -> "Config":
@@ -33,4 +38,6 @@ class Config:
             max_results=data.get("max_results", 5),
             min_score=data.get("min_score", 0.0),
             embedding_model=data.get("embedding_model", "microsoft/codebert-base"),
+            openai_api_key=data.get("openai_api_key"),
+            storage_path=data.get("storage_path"),
         )

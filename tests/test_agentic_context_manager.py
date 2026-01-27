@@ -3,7 +3,7 @@
 import pytest
 from cogneetree.core.context_manager import ContextManager
 from cogneetree.config import Config
-from cogneetree.core.context_storage import ContextCategory
+from cogneetree.core.models import ContextCategory
 
 
 class TestContextManager:

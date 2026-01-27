@@ -1,19 +1,40 @@
 """Context manager - simple interface to storage and retrieval."""
 
 from typing import List, Dict, Any, Optional
-from cogneetree.core.context_storage import ContextStorage, ContextCategory
+from cogneetree.core.interfaces import ContextStorageABC, EmbeddingModelABC
+from cogneetree.storage.in_memory_storage import InMemoryStorage
 from cogneetree.retrieval.retrieval_strategies import Retriever
 from cogneetree.config import Config
+from cogneetree.core.models import ContextCategory
 
 
 class ContextManager:
     """Simple context manager - storage + retrieval."""
 
-    def __init__(self, config: Optional[Config] = None):
-        """Initialize with optional config."""
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        storage: Optional[ContextStorageABC] = None,
+        embedding_model: Optional[EmbeddingModelABC] = None,
+    ):
+        """Initialize with optional config, storage, and embedding model."""
         self.config = config or Config.default()
-        self.storage = ContextStorage()
-        self.retriever = Retriever(self.storage, use_semantic=self.config.use_semantic)
+        # Use provided storage or create default
+        self.storage = storage or self._create_storage(self.config)
+        self.retriever = Retriever(
+            self.storage,
+            use_semantic=self.config.use_semantic,
+            embedding_model=embedding_model,
+        )
+
+    @staticmethod
+    def _create_storage(config: Config) -> ContextStorageABC:
+        """Factory method to create storage based on config.
+
+        Currently only supports in-memory storage.
+        Override this method in subclasses to support other backends.
+        """
+        return InMemoryStorage()
 
     # ==================== Session ====================
 
@@ -38,7 +59,9 @@ class ContextManager:
         planner_analysis: str,
     ):
         """Create activity."""
-        return self.storage.create_activity(activity_id, session_id, description, tags, mode, component, planner_analysis)
+        return self.storage.create_activity(
+            activity_id, session_id, description, tags, mode, component, planner_analysis
+        )
 
     def get_current_activity(self):
         """Get current activity."""
@@ -78,7 +101,9 @@ class ContextManager:
 
     # ==================== Retrieve ====================
 
-    def retrieve(self, query_tags: List[str], query_description: str, max_results: Optional[int] = None) -> List[Dict[str, Any]]:
+    def retrieve(
+        self, query_tags: List[str], query_description: str, max_results: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         """Retrieve relevant context."""
         max_results = max_results or self.config.max_results
         return self.retriever.retrieve(query_tags, query_description, max_results)
@@ -131,3 +156,4 @@ class ContextManager:
     def clear(self):
         """Clear all storage."""
         self.storage.clear()
+

@@ -64,7 +64,8 @@ line_length = 120
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "--cov=cogneetree --cov-report=term-missing --cov-report=html"
+# Coverage options commented out - install pytest-cov to enable: pip install pytest-cov
+# addopts = "--cov=cogneetree --cov-report=term-missing --cov-report=html"
 
 [tool.mypy]
 python_version = "3.8"

@@ -1,23 +1,30 @@
 """Simple retriever - tag-based and optional semantic."""
 
 from typing import List, Dict, Any, Optional
-from cogneetree.core.context_storage import ContextStorage, ContextItem
+from cogneetree.core.interfaces import ContextStorageABC, EmbeddingModelABC
+from cogneetree.core.models import ContextItem
 from cogneetree.retrieval.tag_normalization import normalize_tag
 
 
 class Retriever:
     """Simple retriever - fast and easy to understand."""
 
-    def __init__(self, storage: ContextStorage, use_semantic: bool = False):
+    def __init__(
+        self,
+        storage: ContextStorageABC,
+        use_semantic: bool = False,
+        embedding_model: Optional[EmbeddingModelABC] = None,
+    ):
         self.storage = storage
         self.use_semantic = use_semantic
-        self.embedding_model = None
+        self.embedding_model = embedding_model
 
-        if use_semantic:
+        if use_semantic and not self.embedding_model:
             try:
-                from cogneetree.retrieval.semantic_retrieval import EmbeddingModel
-                self.embedding_model = EmbeddingModel()
-            except (ImportError, Exception):
+                from cogneetree.retrieval.semantic_retrieval import SentenceTransformerModel
+                self.embedding_model = SentenceTransformerModel()
+            except ImportError:
+                # Semantic retrieval dependencies not installed, skipping
                 pass
 
     def retrieve(
@@ -45,17 +52,24 @@ class Retriever:
         if not items:
             return []
 
+        # Local embedding cache to avoid recomputation within this retrieval call
+        embedding_cache: Dict[str, Any] = {}
+
         # Score items
-        scored = self._score_items(items, normalized_tags, query_description)
+        scored = self._score_items(items, normalized_tags, query_description, embedding_cache)
 
         # Sort and limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:max_results]
 
     def _score_items(
-        self, items: List[ContextItem], query_tags: List[str], query_description: str
+        self,
+        items: List[ContextItem],
+        query_tags: List[str],
+        query_description: str,
+        embedding_cache: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        """Score items by relevance."""
+        """Score items by relevance. Uses embedding_cache to avoid recomputation."""
         scored = []
 
         for item in items:
@@ -68,7 +82,7 @@ class Retriever:
 
             # Semantic score if enabled
             if self.use_semantic and self.embedding_model and query_description:
-                semantic_score = self._semantic_score(item, query_description)
+                semantic_score = self._semantic_score(item, query_description, embedding_cache)
                 score = (tag_score + semantic_score) / 2
                 score_breakdown["semantic"] = semantic_score
 
@@ -83,23 +97,40 @@ class Retriever:
 
         return scored
 
-    def _semantic_score(self, item: ContextItem, query_description: str) -> float:
-        """Calculate semantic similarity score."""
+    def _semantic_score(
+        self,
+        item: ContextItem,
+        query_description: str,
+        embedding_cache: Dict[str, Any],
+    ) -> float:
+        """Calculate semantic similarity score with embedding caching."""
         if not self.embedding_model:
             return 0.0
 
         try:
-            query_emb = self.embedding_model.encode(query_description)
-            item_text = f"{item.content} {' '.join(item.tags)}"
-            item_emb = self.embedding_model.encode(item_text)
+            import numpy as np
+
+            # Get or compute query embedding (cached by description)
+            if "query" not in embedding_cache:
+                embedding_cache["query"] = self.embedding_model.encode(query_description)
+            query_emb = embedding_cache["query"]
+
+            # Get or compute item embedding (cached by item id)
+            item_id = id(item)
+            if item_id not in embedding_cache:
+                # Combine content and tags, handling empty tags
+                tags_str = f" {' '.join(item.tags)}" if item.tags else ""
+                item_text = f"{item.content}{tags_str}"
+                embedding_cache[item_id] = self.embedding_model.encode(item_text)
+            item_emb = embedding_cache[item_id]
 
             # Cosine similarity
-            import numpy as np
             norm1 = np.linalg.norm(query_emb)
             norm2 = np.linalg.norm(item_emb)
             if norm1 == 0 or norm2 == 0:
                 return 0.0
             similarity = float(np.dot(query_emb, item_emb) / (norm1 * norm2))
             return max(0.0, min(1.0, (similarity + 1) / 2))
-        except Exception:
+        except (ImportError, AttributeError, ValueError):
+            # Catch expected errors: missing numpy, encoding issues, API errors
             return 0.0

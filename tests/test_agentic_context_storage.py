@@ -1,8 +1,8 @@
 """Tests for refactored agentic_context.core.context_storage module."""
 
 import pytest
-from cogneetree.core.context_storage import (
-    ContextStorage,
+from cogneetree.storage.in_memory_storage import InMemoryStorage
+from cogneetree.core.models import (
     ContextItem,
     ContextCategory,
     Session,
@@ -66,14 +66,14 @@ class TestContextStorage:
 
     def test_create_session(self):
         """Test creating a session."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         session = storage.create_session("s1", "Ask", "Plan")
         assert session.session_id == "s1"
         assert storage.current_session_id == "s1"
 
     def test_create_activity(self):
         """Test creating an activity."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.create_session("s1", "Ask", "Plan")
         activity = storage.create_activity("a1", "s1", "Desc", ["tag"], "coder", "comp", "analysis")
         assert activity.activity_id == "a1"
@@ -81,7 +81,7 @@ class TestContextStorage:
 
     def test_create_task(self):
         """Test creating a task."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.create_session("s1", "Ask", "Plan")
         storage.create_activity("a1", "s1", "Desc", ["tag"], "coder", "comp", "analysis")
         task = storage.create_task("t1", "a1", "Task desc", ["tag"])
@@ -90,14 +90,14 @@ class TestContextStorage:
 
     def test_add_item(self):
         """Test adding a context item."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         item = storage.add_item("Content", ContextCategory.ACTION, ["tag"])
         assert len(storage.items) == 1
         assert item.content == "Content"
 
     def test_get_items_by_category(self):
         """Test getting items by category."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.add_item("Action 1", ContextCategory.ACTION, ["tag"])
         storage.add_item("Action 2", ContextCategory.ACTION, ["tag"])
         storage.add_item("Decision 1", ContextCategory.DECISION, ["tag"])
@@ -110,7 +110,7 @@ class TestContextStorage:
 
     def test_get_items_by_tags(self):
         """Test getting items by tags."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.add_item("Item 1", ContextCategory.ACTION, ["api", "auth"])
         storage.add_item("Item 2", ContextCategory.ACTION, ["api"])
         storage.add_item("Item 3", ContextCategory.DECISION, ["auth"])
@@ -120,7 +120,7 @@ class TestContextStorage:
 
     def test_complete_task(self):
         """Test completing a task."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.create_session("s1", "Ask", "Plan")
         storage.create_activity("a1", "s1", "Desc", ["tag"], "coder", "comp", "analysis")
         task = storage.create_task("t1", "a1", "Task", ["tag"])
@@ -130,7 +130,7 @@ class TestContextStorage:
 
     def test_get_stats(self):
         """Test getting storage statistics."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.create_session("s1", "Ask", "Plan")
         storage.create_activity("a1", "s1", "Desc", ["tag"], "coder", "comp", "analysis")
         storage.create_task("t1", "a1", "Task", ["tag"])
@@ -144,7 +144,7 @@ class TestContextStorage:
 
     def test_clear(self):
         """Test clearing storage."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.create_session("s1", "Ask", "Plan")
         storage.add_item("Item", ContextCategory.ACTION, ["tag"])
 

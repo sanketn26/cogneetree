@@ -1,10 +1,8 @@
 """Tests for refactored agentic_context.retrieval.retrieval_strategies module."""
 
 import pytest
-from cogneetree.core.context_storage import (
-    ContextStorage,
-    ContextCategory,
-)
+from cogneetree.storage.in_memory_storage import InMemoryStorage
+from cogneetree.core.models import ContextCategory
 from cogneetree.retrieval.retrieval_strategies import Retriever
 
 
@@ -13,7 +11,7 @@ class TestRetriever:
 
     def test_retrieve_by_tags_exact_match(self):
         """Test retrieving items with exact tag match."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.add_item("API implementation", ContextCategory.ACTION, ["api", "auth"])
         storage.add_item("Database schema", ContextCategory.DECISION, ["database"])
         storage.add_item("Cache strategy", ContextCategory.LEARNING, ["cache", "api"])
@@ -27,7 +25,7 @@ class TestRetriever:
 
     def test_retrieve_with_max_results(self):
         """Test max_results parameter."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         for i in range(10):
             storage.add_item(f"Item {i}", ContextCategory.ACTION, ["common"])
 
@@ -38,7 +36,7 @@ class TestRetriever:
 
     def test_retrieve_with_multiple_query_tags(self):
         """Test retrieving with multiple query tags."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.add_item("High priority", ContextCategory.ACTION, ["important", "urgent"])
         storage.add_item("Low priority", ContextCategory.ACTION, ["other"])
 
@@ -50,7 +48,7 @@ class TestRetriever:
 
     def test_retrieve_empty_storage(self):
         """Test retrieving from empty storage."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         retriever = Retriever(storage, use_semantic=False)
 
         results = retriever.retrieve(["any_tag"], "query description", max_results=5)
@@ -58,7 +56,7 @@ class TestRetriever:
 
     def test_retrieve_by_category(self):
         """Test retrieving items across categories."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.add_item("Action item", ContextCategory.ACTION, ["tag1"])
         storage.add_item("Decision item", ContextCategory.DECISION, ["tag1"])
         storage.add_item("Learning item", ContextCategory.LEARNING, ["tag1"])
@@ -71,7 +69,7 @@ class TestRetriever:
 
     def test_retrieve_respects_recency(self):
         """Test that more recent items are scored higher."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         
         # Add items with tags - more recent ones should be prioritized
         storage.add_item("Older item", ContextCategory.ACTION, ["api"])
@@ -85,7 +83,7 @@ class TestRetriever:
 
     def test_retrieve_multiple_tags(self):
         """Test retrieving with multiple tag queries."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.add_item("API auth", ContextCategory.ACTION, ["api", "auth"])
         storage.add_item("API cache", ContextCategory.ACTION, ["api", "cache"])
         storage.add_item("DB auth", ContextCategory.ACTION, ["database", "auth"])
@@ -98,7 +96,7 @@ class TestRetriever:
 
     def test_score_items_basic(self):
         """Test internal _score_items method."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         item1 = storage.add_item("Item 1", ContextCategory.ACTION, ["tag1", "tag2"])
         item2 = storage.add_item("Item 2", ContextCategory.ACTION, ["tag2"])
         item3 = storage.add_item("Item 3", ContextCategory.ACTION, ["other"])
@@ -106,13 +104,13 @@ class TestRetriever:
         retriever = Retriever(storage, use_semantic=False)
 
         # Score items for ["tag1"] - item1 should score highest
-        scored = retriever._score_items(storage.items, ["tag1"], "query desc")
+        scored = retriever._score_items(storage.items, ["tag1"], "query desc", {})
         assert len(scored) == 3
         assert scored[0]["score"] >= scored[1]["score"]  # item1 score >= item2 score
 
     def test_retrieve_with_description(self):
         """Test retrieving with query description."""
-        storage = ContextStorage()
+        storage = InMemoryStorage()
         storage.add_item("Authentication module", ContextCategory.ACTION, ["auth"])
         storage.add_item("Authorization module", ContextCategory.ACTION, ["auth"])
 

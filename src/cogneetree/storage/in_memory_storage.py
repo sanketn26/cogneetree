@@ -1,72 +1,12 @@
-"""Context Storage - Simple flat storage with parent tracking."""
+"""In-memory implementation of ContextStorage."""
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
-from datetime import datetime
-from enum import Enum
-
-
-class ContextCategory(Enum):
-    """Context item categories."""
-
-    SESSION = "session"
-    ACTIVITY = "activity"
-    TASK = "task"
-    ACTION = "action"
-    DECISION = "decision"
-    LEARNING = "learning"
-    RESULT = "result"
+from typing import Dict, List, Optional, Any
+from cogneetree.core.interfaces import ContextStorageABC
+from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory
 
 
-@dataclass
-class ContextItem:
-    """Single context item with metadata."""
-
-    content: str
-    category: ContextCategory
-    tags: List[str] = field(default_factory=list)
-    timestamp: datetime = field(default_factory=datetime.now)
-    parent_id: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    embedding: Optional[Any] = None
-
-
-@dataclass
-class Session:
-    """Session context."""
-
-    session_id: str
-    original_ask: str
-    high_level_plan: str
-    created_at: datetime = field(default_factory=datetime.now)
-
-
-@dataclass
-class Activity:
-    """Activity context."""
-
-    activity_id: str
-    session_id: str
-    description: str
-    tags: List[str]
-    mode: str
-    component: str
-    planner_analysis: str
-
-
-@dataclass
-class Task:
-    """Task context."""
-
-    task_id: str
-    activity_id: str
-    description: str
-    tags: List[str]
-    result: Optional[str] = None
-
-
-class ContextStorage:
-    """Simple flat storage for context items."""
+class InMemoryStorage(ContextStorageABC):
+    """Simple flat storage for context items in memory."""
 
     def __init__(self):
         self.sessions: Dict[str, Session] = {}
@@ -96,7 +36,9 @@ class ContextStorage:
         planner_analysis: str,
     ) -> Activity:
         """Create activity."""
-        activity = Activity(activity_id, session_id, description, tags, mode, component, planner_analysis)
+        activity = Activity(
+            activity_id, session_id, description, tags, mode, component, planner_analysis
+        )
         self.activities[activity_id] = activity
         self.current_activity_id = activity_id
         return activity
@@ -108,7 +50,7 @@ class ContextStorage:
         self.current_task_id = task_id
         return task
 
-    def complete_task(self, task_id: str, result: str):
+    def complete_task(self, task_id: str, result: str) -> None:
         """Mark task complete."""
         if task_id in self.tasks:
             self.tasks[task_id].result = result
@@ -122,7 +64,9 @@ class ContextStorage:
         embedding: Optional[Any] = None,
     ) -> ContextItem:
         """Add context item."""
-        item = ContextItem(content, category, tags, parent_id=parent_id, embedding=embedding)
+        item = ContextItem(
+            content, category, tags, parent_id=parent_id, embedding=embedding
+        )
         self.items.append(item)
         return item
 
@@ -156,17 +100,13 @@ class ContextStorage:
             return self.tasks.get(self.current_task_id)
         return None
 
-    def get_items_by_category(self, category: ContextCategory) -> List[ContextItem]:
-        """Get items by category."""
-        return [item for item in self.items if item.category == category]
-
     def get_items_by_tags(self, tags: List[str]) -> List[ContextItem]:
         """Get items matching any tag."""
         return [item for item in self.items if any(tag in item.tags for tag in tags)]
 
-    def get_items_for_parent(self, parent_id: str) -> List[ContextItem]:
-        """Get items for session/activity/task."""
-        return [item for item in self.items if item.parent_id == parent_id]
+    def get_items_by_category(self, category: ContextCategory) -> List[ContextItem]:
+        """Get items by category."""
+        return [item for item in self.items if item.category == category]
 
     def get_stats(self) -> Dict[str, int]:
         """Get storage statistics."""
@@ -177,7 +117,7 @@ class ContextStorage:
             "items": len(self.items),
         }
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear all data."""
         self.sessions.clear()
         self.activities.clear()

@@ -3,15 +3,26 @@
 from contextlib import contextmanager
 from typing import Optional, List
 from cogneetree.core.context_manager import ContextManager
+from cogneetree.core.interfaces import ContextStorageABC, EmbeddingModelABC
 from cogneetree.config import Config
+
 
 
 class ContextWorkflow:
     """Entry point for context tracking in workflows."""
 
-    def __init__(self, config: Optional[Config] = None):
-        """Initialize workflow with optional config."""
-        self.manager = ContextManager(config or Config.default())
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        storage: Optional[ContextStorageABC] = None,
+        embedding_model: Optional[EmbeddingModelABC] = None,
+    ):
+        """Initialize workflow with optional config, storage, and embedding model."""
+        self.manager = ContextManager(
+            config=config or Config.default(),
+            storage=storage,
+            embedding_model=embedding_model,
+        )
 
     @contextmanager
     def session(self, session_id: str, original_ask: str, high_level_plan: str):
@@ -75,7 +86,8 @@ class ActivityContext:
             raise ValueError("No active activity")
 
         tags = tags or []
-        task_id = f"task_{len(self.manager.storage.tasks) + 1:03d}"
+        import uuid
+        task_id = f"task_{uuid.uuid4().hex[:6]}"
         self.manager.create_task(task_id, activity.activity_id, description, tags)
 
         try:
