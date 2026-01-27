@@ -19,16 +19,34 @@ from cogneetree.core.models import (
     Activity,
     Task,
 )
+from cogneetree.retrieval.hierarchical_retriever import (
+    HierarchicalRetriever,
+    RetrievalConfig,
+    HistoryMode,
+    RETRIEVAL_PRESETS,
+)
+from cogneetree.agent_memory import AgentMemory, ContextResult
 
 __all__ = [
+    # Context management
     "ContextWorkflow",
     "Config",
     "ContextManager",
+    # Storage
     "ContextStorageABC",
     "InMemoryStorage",
+    # Data models
     "ContextItem",
     "ContextCategory",
     "Session",
     "Activity",
     "Task",
+    # Retrieval (hierarchical)
+    "HierarchicalRetriever",
+    "RetrievalConfig",
+    "HistoryMode",
+    "RETRIEVAL_PRESETS",
+    # Agent interface (recommended for agents)
+    "AgentMemory",
+    "ContextResult",
 ]
