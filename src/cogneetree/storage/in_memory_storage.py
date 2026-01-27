@@ -117,6 +117,43 @@ class InMemoryStorage(ContextStorageABC):
             "items": len(self.items),
         }
 
+    def get_items_by_task(self, task_id: str) -> List[ContextItem]:
+        """Get items recorded within a specific task."""
+        return [item for item in self.items if item.parent_id == task_id]
+
+    def get_items_by_activity(self, activity_id: str) -> List[ContextItem]:
+        """Get items recorded within a specific activity (all its tasks)."""
+        activity_task_ids = {
+            task_id
+            for task_id, task in self.tasks.items()
+            if task.activity_id == activity_id
+        }
+        return [item for item in self.items if item.parent_id in activity_task_ids]
+
+    def get_items_by_session(self, session_id: str) -> List[ContextItem]:
+        """Get items recorded within a specific session (all its activities/tasks)."""
+        session_activity_ids = {
+            activity_id
+            for activity_id, activity in self.activities.items()
+            if activity.session_id == session_id
+        }
+        session_task_ids = {
+            task_id
+            for task_id, task in self.tasks.items()
+            if task.activity_id in session_activity_ids
+        }
+        return [item for item in self.items if item.parent_id in session_task_ids]
+
+    def get_all_sessions(self) -> List[Session]:
+        """Get all sessions in chronological order."""
+        return sorted(self.sessions.values(), key=lambda s: s.created_at)
+
+    def get_activity_tasks(self, activity_id: str) -> List[Task]:
+        """Get all tasks within an activity."""
+        return [
+            task for task in self.tasks.values() if task.activity_id == activity_id
+        ]
+
     def clear(self) -> None:
         """Clear all data."""
         self.sessions.clear()

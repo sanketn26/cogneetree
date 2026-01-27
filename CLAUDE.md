@@ -1,6 +1,300 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for working with Cogneetree: hierarchical agentic memory with micro/macro search.
+
+---
+
+## Philosophy
+
+**Cogneetree enables AI agents to build true long-term memory across projects, not just remember the current session.**
+
+### Core Insight: Knowledge Grows in Branches
+
+Every conversation, project, or task is a **branch** in a growing knowledge tree:
+
+```
+Knowledge Tree (your agentic memory)
+├── Project 1: "Implement OAuth2" (Session 1)
+│   ├── Learn grant types → Actions, Decisions, Learnings
+│   ├── Understand JWT → Actions, Decisions, Learnings
+│   └── Result: Working auth system
+│
+├── Project 2: "Build microservices" (Session 2)
+│   ├── Service authentication → Actions, Decisions, Learnings
+│   └── Result: Microservices communicating
+│
+└── Project 3: "New project" (Session 3) ← You are here
+    ├── Setup authentication → micro-search finds relevant past learnings
+    └── (future work)
+```
+
+**At each branch (task), you record:**
+- **Actions**: What you did
+- **Decisions**: Why you chose that approach
+- **Learnings**: What you discovered
+- **Results**: What was accomplished
+
+**This becomes your knowledge bank.** When the agent faces a similar problem later, it can ask:
+- **Micro Search** ("Fresh"): "Just show me what I learned in THIS task"
+- **Macro Search** ("Learn from All"): "Show me EVERYTHING related to this pattern across all my projects"
+- **Balanced Search** (Default): "Prioritize THIS project but remind me what I learned before"
+
+---
+
+## Design Structure: Hierarchical Retrieval
+
+### Three-Level Hierarchy + Micro/Macro Search
+
+```
+Session (Project scope)
+  "Implement OAuth2 authentication"
+
+  ├── Activity (Work area)
+  │   "Understand OAuth2 fundamentals"
+  │
+  │   ├── Task (Atomic work)
+  │   │   "Learn grant types"
+  │   │   │
+  │   │   ├── Action: "Read RFC 6749"
+  │   │   ├── Decision: "Use auth code flow for web apps"
+  │   │   ├── Learning: "OAuth2 has 4 grant types"
+  │   │   └── Result: "Understand complete"
+  │   │
+  │   └── Task (Atomic work)
+  │       "Understand JWT"
+  │       │
+  │       ├── Action: "Decode JWT on jwt.io"
+  │       ├── Decision: "Use HS256 for symmetric signing"
+  │       ├── Learning: "JWT: header.payload.signature"
+  │       └── Result: "JWT structure clear"
+  │
+  └── Activity (Work area)
+      "Implement in API"
+      └── Task
+          "Add JWT validation middleware"
+          └── (Records actions/decisions/learnings)
+```
+
+**The hierarchy IS your memory structure.** No separate concept graph—work is organized hierarchically.
+
+### Retrieval Modes: Choosing Your Search Scope
+
+**Micro Search (Current Only)**
+```python
+config = RETRIEVAL_PRESETS["fresh"]
+results = retriever.retrieve("JWT validation", task_id="t4", config=config)
+# Returns: Items from THIS task only
+# Use: Focused work, avoid distractions
+```
+
+**Macro Search (All Sessions)**
+```python
+config = RETRIEVAL_PRESETS["learn_from_all"]
+results = retriever.retrieve("JWT validation", task_id="t4", config=config)
+# Returns: Items from ALL projects, weighted equally
+# Use: Pattern finding, learning how you've solved this before
+```
+
+**Balanced Search (Current Weighted) — Default**
+```python
+config = RETRIEVAL_PRESETS["balanced"]
+results = retriever.retrieve("JWT validation", task_id="t4", config=config)
+# Returns: Current task/activity prioritized + relevant history
+# Use: Normal development—stay focused but learn from past
+```
+
+**Selective Search (Specific Projects)**
+```python
+config = RetrievalConfig(
+    history_mode=HistoryMode.SELECTED_SESSIONS,
+    include_session_ids=["s1", "s3"]  # Only these projects
+)
+# Use: Comparing specific projects or focused debugging
+```
+
+### Scoring Formula
+
+```
+final_score = semantic_similarity × proximity_weight × temporal_weight
+
+Where:
+- semantic_similarity: How relevant is this to my query? (0.0-1.0)
+- proximity_weight: How close in hierarchy?
+  * Current task: 1.0
+  * Sibling task (same activity): 0.7
+  * Same activity: 0.5
+  * Same session: 0.3
+  * Other sessions: 0.2 (configurable)
+- temporal_weight: How recent? (favor newer learning)
+```
+
+**Result:** Items close to current work rank highest, but highly relevant items from months ago still surface.
+
+---
+
+## Knowledge Bank: Recorded at Each Branch
+
+### Task Level (Most Granular)
+
+```python
+with task.task("Implement JWT validation") as ctx:
+    ctx.record_action("Implemented middleware using express-jwt")
+    ctx.record_decision("Use RS256 instead of HS256 for key rotation")
+    ctx.record_learning("RS256 requires public key distribution")
+    ctx.set_result("Validation working with refresh token flow")
+```
+
+These become **searchable knowledge** via hierarchical retrieval.
+
+### Activity Level (Aggregated)
+
+All task-level items accessible at activity scope. Activity-level decisions can override tasks.
+
+### Session Level (Project Level)
+
+Highest-level outcomes and project-wide decisions.
+
+### Query at Any Level
+
+```python
+# Task-level
+results = retriever.retrieve("JWT validation", task_id="t4")
+
+# Activity-level
+results = retriever.retrieve("authentication", activity_id="a1")
+
+# Session-level (entire project)
+results = retriever.retrieve("oauth", session_id="s1")
+```
+
+---
+
+## Development Best Practices
+
+### 1. SOLID Principles
+
+**Single Responsibility**
+- Each class has ONE reason to change
+- `ContextManager`: Orchestration
+- `Retriever`: Retrieval logic
+- `ContextStorage`: Storage contract
+
+**Open/Closed**
+- New storage? Subclass `ContextStorageABC`
+- New embeddings? Subclass `EmbeddingModelABC`
+- Existing code unchanged
+
+**Liskov Substitution**
+- All storage implementations interchangeable
+- All embedding models interchangeable
+
+**Interface Segregation**
+- `ContextStorageABC`: Only what storage needs
+- `EmbeddingModelABC`: Only encoding/similarity
+
+**Dependency Inversion**
+- Depend on abstractions, not concrete classes
+- Easy to swap implementations
+
+### 2. DRY (Don't Repeat Yourself)
+
+**Embedding Cache**
+```python
+# Reuse embeddings within single retrieval
+embedding_cache["query"] = compute_once(query)
+embedding_cache[item_id] = compute_once(item)
+```
+
+**Storage Factory Pattern**
+```python
+# Single place to create storage
+storage = ContextManager._create_storage(config)
+# Override once, all code uses it
+```
+
+**Proximity Configuration**
+```python
+# Define weights once in RetrievalConfig
+config.current_weight = 1.0
+config.sibling_weight = 0.7
+# No magic numbers scattered
+```
+
+### 3. Code Clarity (1-Minute Readability)
+
+**Explicit Names**
+- `HierarchicalRetriever` not `Retriever`
+- `HistoryMode` enum not string magic
+- `RetrievalConfig` self-documents
+
+**Docstrings Explain Why**
+```python
+"""
+Current hierarchy prioritized; include other sessions with lower weight.
+
+This ensures agents focus on current work while learning from past.
+"""
+```
+
+**Tests Document Usage**
+```python
+def test_micro_search(self):
+    """MICRO: Only search current task."""
+    config = RetrievalConfig(history_mode=HistoryMode.CURRENT_ONLY)
+    # Shows exactly how to use
+```
+
+### 4. Testing Strategy
+
+**Test Each Mode**
+- `test_current_only_mode()` - Focused work
+- `test_current_weighted_mode()` - Default balanced
+- `test_all_sessions_mode()` - Learning across projects
+- `test_selected_sessions_mode()` - Comparing specific projects
+
+**Test User Control**
+- `test_weight_configuration()` - Proximity weights
+- `test_time_filtering()` - Age-based filtering
+- `test_explainability_on_off()` - Reasoning output
+
+**Test Hierarchy**
+- `test_same_task_items_highest_priority()` - Proximity matters
+- `test_sibling_tasks_boost()` - Hierarchy respected
+
+### 5. Configuration Philosophy
+
+**Presets for Common Patterns**
+```python
+RETRIEVAL_PRESETS = {
+    "fresh":         # Current task only
+    "balanced":      # Weighted history (default)
+    "learn_from_all": # All equal
+    "debug":         # Everything with reasoning
+}
+```
+
+**User Agency**
+- Choose `history_mode`
+- Filter by time: `history_depth_days`
+- Select specific sessions
+- Control output: `return_explainability=True`
+
+**Transparency**
+```python
+result = {
+    "item": item,
+    "semantic_score": 0.85,      # How relevant?
+    "proximity_weight": 0.7,     # How close?
+    "final_score": 0.595,        # Combined
+    "explanation": {              # Why?
+        "source_session_id": "s1",
+        "source_location": "Task: Learn grant types",
+        "why": "Semantic match (0.85) × proximity (0.7)"
+    }
+}
+```
+
+---
 
 ## Development Commands
 

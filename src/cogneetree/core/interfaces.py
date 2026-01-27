@@ -142,6 +142,31 @@ class ContextStorageABC(ABC):
         pass
 
     @abstractmethod
+    def get_items_by_task(self, task_id: str) -> List[ContextItem]:
+        """Get items recorded within a specific task."""
+        pass
+
+    @abstractmethod
+    def get_items_by_activity(self, activity_id: str) -> List[ContextItem]:
+        """Get items recorded within a specific activity (all its tasks)."""
+        pass
+
+    @abstractmethod
+    def get_items_by_session(self, session_id: str) -> List[ContextItem]:
+        """Get items recorded within a specific session (all its activities/tasks)."""
+        pass
+
+    @abstractmethod
+    def get_all_sessions(self) -> List[Session]:
+        """Get all sessions in chronological order."""
+        pass
+
+    @abstractmethod
+    def get_activity_tasks(self, activity_id: str) -> List[Task]:
+        """Get all tasks within an activity."""
+        pass
+
+    @abstractmethod
     def clear(self) -> None:
         """Clear all stored data."""
         pass

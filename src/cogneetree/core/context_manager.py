@@ -84,20 +84,28 @@ class ContextManager:
     # ==================== Record Context ====================
 
     def record_action(self, content: str, tags: List[str]):
-        """Record action."""
-        return self.storage.add_item(content, ContextCategory.ACTION, tags)
+        """Record action under current task."""
+        task = self.storage.get_current_task()
+        parent_id = task.task_id if task else None
+        return self.storage.add_item(content, ContextCategory.ACTION, tags, parent_id=parent_id)
 
     def record_decision(self, content: str, tags: List[str]):
-        """Record decision."""
-        return self.storage.add_item(content, ContextCategory.DECISION, tags)
+        """Record decision under current task."""
+        task = self.storage.get_current_task()
+        parent_id = task.task_id if task else None
+        return self.storage.add_item(content, ContextCategory.DECISION, tags, parent_id=parent_id)
 
     def record_learning(self, content: str, tags: List[str]):
-        """Record learning."""
-        return self.storage.add_item(content, ContextCategory.LEARNING, tags)
+        """Record learning under current task."""
+        task = self.storage.get_current_task()
+        parent_id = task.task_id if task else None
+        return self.storage.add_item(content, ContextCategory.LEARNING, tags, parent_id=parent_id)
 
     def record_result(self, content: str, tags: List[str]):
-        """Record result."""
-        return self.storage.add_item(content, ContextCategory.RESULT, tags)
+        """Record result under current task."""
+        task = self.storage.get_current_task()
+        parent_id = task.task_id if task else None
+        return self.storage.add_item(content, ContextCategory.RESULT, tags, parent_id=parent_id)
 
     # ==================== Retrieve ====================
 
