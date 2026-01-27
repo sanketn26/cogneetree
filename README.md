@@ -2,106 +2,140 @@
 
 **Hierarchical context memory for AI agents**
 
-A lightweight, flexible Python library for managing hierarchical context in AI applications. Build cognitive memory trees with Session → Activity → Task hierarchies, tag-based organization, and optional semantic retrieval.
+A lightweight, flexible Python library for managing hierarchical context in AI applications. Build persistent memory across projects with Session → Activity → Task hierarchies, giving agents access to past decisions, learnings, and patterns.
 
-## ✨ Features
+## ✨ Key Features
 
-- **Hierarchical Context** - Natural Session → Activity → Task structure
-- **Flexible Storage** - In-memory (default), SQLite, PostgreSQL, Redis, MongoDB
-- **Tag-Based Organization** - Organize context with flexible tagging
-- **Semantic Retrieval** - Optional embedding-based context search
-- **Temporal Tracking** - Built-in timestamp tracking
-- **LLM-Ready** - Built-in prompt building with context injection
-- **Simple & Clean** - 650 lines, 70% reduction from original design
+- **Hierarchical Memory** - Session → Activity → Task structure mirrors how work actually happens
+- **Multi-Scope Retrieval** - Micro (focused), Balanced (practical), Macro (learning) searches
+- **Transparent Reasoning** - See why each piece of context was selected
+- **Flexible Storage** - In-memory (default) plus SQLite, PostgreSQL, Redis, MongoDB
+- **Tag-Based Organization** - Flexible categorization that grows with your work
+- **Temporal Awareness** - Automatic timestamp tracking favors recent learnings
+- **LLM-Ready** - Built-in prompt building with integrated context injection
+- **Minimal Dependencies** - Core library has zero external dependencies
 
 ## 🚀 Quick Start
 
-```python
-from cogneetree import ContextWorkflow, Config
-
-# Create workflow
-workflow = ContextWorkflow(config=Config.default())
-
-# Build hierarchical context
-with workflow.session("proj_1", "Build REST API", "Design → Code → Test") as session:
-    with session.activity("auth", "Add authentication", "coder", "api", "JWT-based auth", tags=["auth", "security"]) as activity:
-        with activity.task("implement_jwt", "JWT validation", tags=["jwt"]) as task:
-            # Record context
-            task.record_decision("Use RS256 for signing")
-            task.record_learning("Short expiry + refresh token pattern")
-            task.record_action("Created JWT middleware")
-            
-            # Build context-aware prompt
-            prompt = task.build_prompt(include_history=True)
-            
-            # Mark complete
-            task.set_result("JWT middleware implemented")
-```
-
-## 📦 Installation
+### Installation
 
 ```bash
-# Basic installation
 pip install cogneetree
-
-# With semantic retrieval support
-pip install cogneetree[semantic]
-
-# With development dependencies
-pip install cogneetree[dev]
 ```
 
-## 🏗️ Architecture
-
-```
-Session (Top-level context)
-  └── Activity (Mid-level work unit)
-      └── Task (Atomic work item)
-          ├── Actions (What was done)
-          ├── Decisions (Why choices were made)
-          ├── Learnings (What was discovered)
-          └── Results (Outcomes)
-```
-
-## 🔧 Storage Backends
+### Basic Usage
 
 ```python
-from cogneetree import ContextWorkflow
-from cogneetree.storage import SQLiteStorage, RedisStorage
+from cogneetree import ContextManager, AgentMemory
 
-# In-memory (default)
-workflow = ContextWorkflow()
+# Initialize context storage
+manager = ContextManager()
 
-# SQLite persistence
-workflow = ContextWorkflow(storage=SQLiteStorage(".cogneetree/memory.db"))
+# Create a session (project)
+manager.create_session("proj_1", "Build API auth", "JWT-based authentication")
+manager.create_activity("a1", "proj_1", "Understand JWT", ["jwt", "auth"], "learner", "core", "research")
+manager.create_task("t1", "a1", "Learn JWT structure", ["jwt"])
 
-# Redis distributed
-workflow = ContextWorkflow(storage=RedisStorage("redis://localhost:6379"))
+# Record what you learn and decide
+manager.record_learning("JWT has three parts: header.payload.signature", ["jwt", "structure"])
+manager.record_decision("Use HS256 for symmetric signing", ["jwt", "algorithm"])
+
+# Later, get memory for your current task
+manager.create_task("t2", "a1", "Implement JWT validation", ["jwt", "validation"])
+memory = AgentMemory(manager.storage, current_task_id="t2")
+
+# Query past knowledge - one line!
+context = memory.recall("JWT validation")
+for item in context:
+    print(f"{item.category}: {item.content}")
 ```
 
-## 📖 Documentation
+## 📚 Documentation
 
-- **[Quick Start Guide](docs/quickstart.md)** - Get started in 5 minutes
-- **[API Reference](docs/api.md)** - Complete API documentation
-- **[Storage Backends](docs/storage.md)** - Available storage options
-- **[Examples](examples/)** - Real-world usage examples
+| Document | Purpose |
+|----------|---------|
+| **[AGENT_MEMORY.md](AGENT_MEMORY.md)** | Guide for AI agents - API reference, scopes, integration examples |
+| **[CLAUDE.md](CLAUDE.md)** | Development philosophy - architecture, design decisions, best practices |
+| **[examples/](examples/)** | Real-world usage examples and integration patterns |
+
+## 🏗️ How It Works
+
+### Three-Level Hierarchy
+
+Work is organized into three natural levels:
+
+```
+Session (Project)
+  ├── Activity (Work Area)
+  │   └── Task (Atomic Work Item)
+  │       ├── Actions (what you did)
+  │       ├── Decisions (why you chose that)
+  │       ├── Learnings (what you discovered)
+  │       └── Results (what was accomplished)
+```
+
+### Retrieval Scopes
+
+When an agent needs context, it chooses a scope:
+
+- **Micro**: This task only (focused work)
+- **Balanced**: Current task + recent history (90 days) - **default**
+- **Macro**: All projects equally (pattern learning)
+
+### Why This Matters
+
+Instead of agents starting fresh each project, they build persistent memory:
+
+```python
+# Project 1: Agent learns
+manager.record_decision("Use HS256 for JWT", ["jwt"])
+
+# Project 2: Agent finds this automatically
+context = memory.recall("JWT signing")  # Finds HS256 decision!
+```
+
+Over time, agents develop genuine expertise that compounds across projects.
 
 ## 🎯 Use Cases
 
-- **AI Coding Assistants** - Track code generation context and decisions
-- **Customer Support Bots** - Maintain conversation history and resolutions
-- **Research Tools** - Organize findings and connect related work
-- **DevOps Automation** - Track incident response and solutions
-- **Content Creation** - Remember successful patterns and learnings
+- **AI Coding Assistants** - Remember architecture decisions, patterns, and lessons
+- **DevOps Automation** - Track incident responses and proven solutions
+- **Customer Support** - Maintain context across conversations and cases
+- **Research Tools** - Connect findings and build on past discoveries
+- **Content Creation** - Learn from patterns in successful content
+
+## 🔧 Storage Options
+
+By default, Cogneetree uses in-memory storage. For persistence:
+
+```python
+from cogneetree import ContextManager
+from cogneetree.storage.in_memory_storage import InMemoryStorage
+
+# In-memory (default, per-session)
+manager = ContextManager()
+
+# For persistent storage, implement ContextStorageABC or extend InMemoryStorage
+```
+
+See [CLAUDE.md](CLAUDE.md#storage-backend-implementation) for custom storage implementation.
+
+## 📦 What's Included
+
+- **ContextManager** - Simple interface for creating and managing context
+- **AgentMemory** - Frictionless memory access for AI agents (recommended)
+- **HierarchicalRetriever** - Advanced retrieval with 4 history modes
+- **InMemoryStorage** - Fast, default storage backend
+- **RetrievalConfig** - Fine-grained control over search behavior
 
 ## 🤝 Contributing
 
-Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome! Please see our development guide in [CLAUDE.md](CLAUDE.md#development-commands).
 
 ## 📄 License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details
 
-## 🙏 Credits
+---
 
-Originally developed as part of the [Vivek](https://github.com/yourusername/vivek) AI coding assistant project, extracted for standalone use.
+**Start with [AGENT_MEMORY.md](AGENT_MEMORY.md) if you're building agents. Start with [CLAUDE.md](CLAUDE.md) if you're extending the library.**
