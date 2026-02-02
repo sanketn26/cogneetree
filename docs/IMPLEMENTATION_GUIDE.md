@@ -171,25 +171,36 @@ High-level interface optimized for AI agents. Wraps HierarchicalRetriever with c
 - Context building for LLM prompts
 - Scope management (micro/balanced/macro)
 
+**ContextResult Model**:
+```python
+@dataclass
+class ContextResult:
+    content: str
+    category: str      # "decision", "learning", "action", "result"
+    source: str        # Human readable: "Project X, Task Y"
+    confidence: float  # Relevance score (0.0 to 1.0)
+    explanation: Optional[Dict[str, Any]] = None
+```
+
 **Key Methods**:
 
 ```python
-from cogneetree import AgentMemory, HistoryMode
+from cogneetree import AgentMemory
 
 memory = AgentMemory(manager.storage, current_task_id="task_jwt_structure_001")
 
-# Simple recall (default: CURRENT_WEIGHTED scope)
-context = memory.recall("JWT validation strategies")
+# Simple recall (returns List[ContextResult])
+results = memory.recall("JWT validation strategies")
 
 # Specify scope
-context_focused = memory.recall(
+results_focused = memory.recall(
     "JWT validation",
     scope="micro"  # Only this task
 )
 
-context_learning = memory.recall(
+results_balanced = memory.recall(
     "authentication patterns",
-    scope="macro"  # All projects equally
+    scope="balanced"  # Current session + related history
 )
 
 # Build context for LLM
@@ -198,17 +209,6 @@ context_str = memory.build_context(
     max_items=5
 )
 # Returns formatted markdown ready for prompt injection
-
-# Detailed retrieval with config
-from cogneetree import RetrievalConfig, HistoryMode
-
-config = RetrievalConfig(
-    history_mode=HistoryMode.CURRENT_WEIGHTED,
-    max_results=10,
-    time_depth_days=90,
-    include_explanation=True
-)
-context = memory.recall_with_config("JWT implementation", config)
 ```
 
 ### 3. Storage Backend (ContextStorageABC)
@@ -226,14 +226,16 @@ Abstract base class for all storage implementations.
 |---------|----------|-------------|
 | **InMemoryStorage** | Development, testing | Per-process only |
 | **FileStorage** | Single-machine persistence | JSON files |
-| **SQLStorage** | Multi-user applications | SQLite, PostgreSQL |
+| **SQLiteStorage** | Local development | SQLite database |
+| **PostgresStorage** | Production applications | PostgreSQL database |
 | **RedisStorage** | Distributed systems | Redis backend |
 
 **Custom Implementation Example**:
 
 ```python
+from typing import List, Optional, Any
 from cogneetree import ContextStorageABC
-from cogneetree.core.models import Session, Activity, Task, ContextItem
+from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory
 
 class MongoDBStorage(ContextStorageABC):
     """MongoDB-backed context storage."""
@@ -292,16 +294,20 @@ class MongoDBStorage(ContextStorageABC):
         self.current_task_id = task_id
         return task
 
-    def add_item(self, item: ContextItem) -> None:
+    def add_item(self, content: str, category: ContextCategory,
+                 tags: List[str], parent_id: Optional[str] = None,
+                 embedding: Optional[Any] = None) -> ContextItem:
         """Add a context item."""
+        item = ContextItem(content=content, category=category, tags=tags, parent_id=parent_id)
         self.items_collection.insert_one({
             "content": item.content,
             "category": item.category.value,
             "tags": item.tags,
-            "timestamp": item.timestamp,
+            "timestamp": item.timestamp.isoformat(),
             "parent_id": item.parent_id,
-            "metadata": item.metadata
+            "embedding": embedding
         })
+        return item
 
     # ... implement remaining abstract methods
 ```
@@ -895,7 +901,7 @@ This section provides detailed implementation guides for planned features that w
 **File**: `src/cogneetree/storage/sql_storage.py`
 
 ```python
-"""Complete SQL Storage Implementation."""
+"""Complete SQLite Storage Implementation."""
 
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -905,19 +911,17 @@ from cogneetree.core.models import (
 )
 
 
-class SQLStorage(ContextStorageABC):
-    """SQL-backed storage with complete implementation."""
+class SQLiteStorage(ContextStorageABC):
+    """SQLite-backed storage with complete implementation."""
 
-    def __init__(self, db_url: str):
+    def __init__(self, db_path: str):
         """
-        Initialize SQL storage.
+        Initialize SQLite storage.
 
         Args:
-            db_url: Database connection string
-                    - SQLite: "sqlite:///cogneetree.db"
-                    - PostgreSQL: "postgresql://user:pass@host/db"
+            db_path: Path to SQLite database file
         """
-        self.db_url = db_url
+        self.db_path = db_path
         self._init_db()
 
         # Context stack
@@ -928,17 +932,8 @@ class SQLStorage(ContextStorageABC):
     def _init_db(self):
         """Initialize database schema."""
         import sqlite3
-
-        if self.db_url.startswith("sqlite"):
-            db_path = self.db_url.replace("sqlite:///", "")
-            self.conn = sqlite3.connect(db_path, check_same_thread=False)
-            self.conn.row_factory = sqlite3.Row
-        else:
-            # PostgreSQL support
-            import psycopg2
-            from psycopg2.extras import RealDictCursor
-            self.conn = psycopg2.connect(self.db_url, cursor_factory=RealDictCursor)
-
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
         self._create_tables()
 
     def _create_tables(self):
@@ -985,8 +980,8 @@ class SQLStorage(ContextStorageABC):
 
         # Context items table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS items (
-                item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            CREATE TABLE IF NOT EXISTS context_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 content TEXT NOT NULL,
                 category TEXT NOT NULL,
                 tags TEXT NOT NULL,  -- JSON array
@@ -999,8 +994,8 @@ class SQLStorage(ContextStorageABC):
         """)
 
         # Indexes for performance
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_items_category ON items(category)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_items_parent ON context_items(parent_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_items_category ON context_items(category)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tasks_activity ON tasks(activity_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_activities_session ON activities(session_id)")
 
@@ -1012,16 +1007,15 @@ class SQLStorage(ContextStorageABC):
                        high_level_plan: str) -> Session:
         """Create a new session."""
         import json
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO sessions (session_id, original_ask, high_level_plan) VALUES (?, ?, ?)",
-            (session_id, original_ask, high_level_plan)
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO sessions (session_id, original_ask, high_level_plan) VALUES (?, ?, ?)",
+                (session_id, original_ask, high_level_plan)
+            )
         self.current_session_id = session_id
         return Session(session_id, original_ask, high_level_plan)
 
-    def get_session_by_id(self, session_id: str) -> Optional[Session]:
+    def get_session(self, session_id: str) -> Optional[Session]:
         """Get session by ID."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
@@ -1049,9 +1043,11 @@ class SQLStorage(ContextStorageABC):
             ))
         return sessions
 
-    def get_current_session_id(self) -> Optional[str]:
-        """Get current session ID."""
-        return self.current_session_id
+    def get_current_session(self) -> Optional[Session]:
+        """Get current session."""
+        if self.current_session_id:
+            return self.get_session(self.current_session_id)
+        return None
 
     # ===== ACTIVITY METHODS =====
 
@@ -1060,18 +1056,17 @@ class SQLStorage(ContextStorageABC):
                         planner_analysis: str) -> Activity:
         """Create a new activity."""
         import json
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """INSERT INTO activities
-               (activity_id, session_id, description, tags, mode, component, planner_analysis)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (activity_id, session_id, description, json.dumps(tags), mode, component, planner_analysis)
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO activities
+                   (activity_id, session_id, description, tags, mode, component, planner_analysis)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (activity_id, session_id, description, json.dumps(tags), mode, component, planner_analysis)
+            )
         self.current_activity_id = activity_id
         return Activity(activity_id, session_id, description, tags, mode, component, planner_analysis)
 
-    def get_activity_by_id(self, activity_id: str) -> Optional[Activity]:
+    def get_activity(self, activity_id: str) -> Optional[Activity]:
         """Get activity by ID."""
         import json
         cursor = self.conn.cursor()
@@ -1110,9 +1105,11 @@ class SQLStorage(ContextStorageABC):
             ))
         return activities
 
-    def get_current_activity_id(self) -> Optional[str]:
-        """Get current activity ID."""
-        return self.current_activity_id
+    def get_current_activity(self) -> Optional[Activity]:
+        """Get current activity."""
+        if self.current_activity_id:
+            return self.get_activity(self.current_activity_id)
+        return None
 
     # ===== TASK METHODS =====
 
@@ -1120,16 +1117,20 @@ class SQLStorage(ContextStorageABC):
                     tags: List[str]) -> Task:
         """Create a new task."""
         import json
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO tasks (task_id, activity_id, description, tags) VALUES (?, ?, ?, ?)",
-            (task_id, activity_id, description, json.dumps(tags))
-        )
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO tasks (task_id, activity_id, description, tags) VALUES (?, ?, ?, ?)",
+                (task_id, activity_id, description, json.dumps(tags))
+            )
         self.current_task_id = task_id
         return Task(task_id, activity_id, description, tags)
 
-    def get_task_by_id(self, task_id: str) -> Optional[Task]:
+    def complete_task(self, task_id: str, result: str) -> None:
+        """Mark a task as complete."""
+        with self.conn:
+            self.conn.execute("UPDATE tasks SET result = ? WHERE task_id = ?", (result, task_id))
+
+    def get_task(self, task_id: str) -> Optional[Task]:
         """Get task by ID."""
         import json
         cursor = self.conn.cursor()
@@ -1164,29 +1165,32 @@ class SQLStorage(ContextStorageABC):
             ))
         return tasks
 
-    def get_current_task_id(self) -> Optional[str]:
-        """Get current task ID."""
-        return self.current_task_id
+    def get_current_task(self) -> Optional[Task]:
+        """Get current task."""
+        if self.current_task_id:
+            return self.get_task(self.current_task_id)
+        return None
 
-    # ===== ITEM METHODS (CRITICAL - THESE WERE MISSING) =====
+    # ===== ITEM METHODS =====
 
-    def add_item(self, item: ContextItem) -> None:
+    def add_item(self, content: str, category: ContextCategory, tags: List[str], 
+                 parent_id: Optional[str] = None, embedding: Optional[Any] = None) -> ContextItem:
         """Add a context item."""
         import json
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """INSERT INTO items (content, category, tags, timestamp, parent_id, metadata)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                item.content,
-                item.category.value,
-                json.dumps(item.tags),
-                item.timestamp.isoformat(),
-                item.parent_id,
-                json.dumps(item.metadata)
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO context_items (content, category, tags, timestamp, parent_id, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    content,
+                    category.value,
+                    json.dumps(tags),
+                    datetime.now().isoformat(),
+                    parent_id,
+                    json.dumps({})
+                )
             )
-        )
-        self.conn.commit()
+        return ContextItem(content, category, tags, parent_id=parent_id)
 
     def get_items_by_task(self, task_id: str) -> List[ContextItem]:
         """Get all items for a specific task."""
@@ -1197,7 +1201,7 @@ class SQLStorage(ContextStorageABC):
         import json
         cursor = self.conn.cursor()
         cursor.execute(
-            """SELECT i.* FROM items i
+            """SELECT i.* FROM context_items i
                JOIN tasks t ON i.parent_id = t.task_id
                WHERE t.activity_id = ?
                ORDER BY i.timestamp DESC""",
@@ -1210,7 +1214,7 @@ class SQLStorage(ContextStorageABC):
         import json
         cursor = self.conn.cursor()
         cursor.execute(
-            """SELECT i.* FROM items i
+            """SELECT i.* FROM context_items i
                JOIN tasks t ON i.parent_id = t.task_id
                JOIN activities a ON t.activity_id = a.activity_id
                WHERE a.session_id = ?
@@ -1229,8 +1233,8 @@ class SQLStorage(ContextStorageABC):
         cursor = self.conn.cursor()
         # SQLite JSON support - check if any tag matches
         placeholders = " OR ".join(["tags LIKE ?" for _ in tags])
-        params = [f'%"{tag}"%' for tag in tags]
-        cursor.execute(f"SELECT * FROM items WHERE {placeholders} ORDER BY timestamp DESC", params)
+        params = [f'%"%s"%' % tag for tag in tags]
+        cursor.execute(f"SELECT * FROM context_items WHERE {placeholders} ORDER BY timestamp DESC", params)
         return self._rows_to_items(cursor.fetchall())
 
     def get_all_items(self) -> List[ContextItem]:
@@ -1241,7 +1245,7 @@ class SQLStorage(ContextStorageABC):
         """Execute item query with WHERE clause."""
         cursor = self.conn.cursor()
         cursor.execute(
-            f"SELECT * FROM items WHERE {where_clause} ORDER BY timestamp DESC",
+            f"SELECT * FROM context_items WHERE {where_clause} ORDER BY timestamp DESC",
             params
         )
         return self._rows_to_items(cursor.fetchall())
@@ -1261,9 +1265,7 @@ class SQLStorage(ContextStorageABC):
             ))
         return items
 
-    # ===== STATISTICS (NEW) =====
-
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> Dict[str, int]:
         """Get storage statistics."""
         cursor = self.conn.cursor()
 
@@ -1276,11 +1278,11 @@ class SQLStorage(ContextStorageABC):
         cursor.execute("SELECT COUNT(*) as count FROM tasks")
         tasks_count = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM items")
+        cursor.execute("SELECT COUNT(*) as count FROM context_items")
         items_count = cursor.fetchone()["count"]
 
         cursor.execute(
-            "SELECT category, COUNT(*) as count FROM items GROUP BY category"
+            "SELECT category, COUNT(*) as count FROM context_items GROUP BY category"
         )
         by_category = {row["category"]: row["count"] for row in cursor.fetchall()}
 
@@ -1291,6 +1293,17 @@ class SQLStorage(ContextStorageABC):
             "items": items_count,
             "items_by_category": by_category
         }
+
+    def clear(self) -> None:
+        """Clear all stored data."""
+        with self.conn:
+            self.conn.execute("DELETE FROM sessions")
+            self.conn.execute("DELETE FROM activities")
+            self.conn.execute("DELETE FROM tasks")
+            self.conn.execute("DELETE FROM context_items")
+        self.current_session_id = None
+        self.current_activity_id = None
+        self.current_task_id = None
 
     def close(self):
         """Close database connection."""
@@ -1645,11 +1658,11 @@ print(cached_model.stats())
 
 ---
 
-### 1.3 Thread-Safe Context Management
+### 1.3 Concurrency-Safe Context Management
 
-**Problem**: Context stack uses instance variables that cause race conditions in multi-threaded environments.
+**Problem**: Context stack uses instance variables or `threading.local()` which can cause race conditions or data leakage in modern async/await or multi-threaded agent environments.
 
-**File**: `src/cogneetree/core/thread_safe_context.py`
+**File**: `src/cogneetree/core/safe_context.py`
 
 ```python
 """Thread-safe context management."""
@@ -1664,23 +1677,27 @@ from cogneetree.core.models import Session, Activity, Task
 
 @dataclass
 class ContextState:
-    """Thread-local context state."""
+    """Concurrency-safe context state."""
     session_id: Optional[str] = None
     activity_id: Optional[str] = None
     task_id: Optional[str] = None
 
 
-class ThreadLocalContextStack:
-    """Thread-local context stack for safe concurrent access."""
+class SafeContextStack:
+    """Context stack using ContextVars for safe concurrent access (threads & async)."""
 
     def __init__(self):
-        self._local = threading.local()
+        self._state: contextvars.ContextVar[ContextState] = contextvars.ContextVar(
+            "cogneetree_context", default=ContextState()
+        )
 
     def _get_state(self) -> ContextState:
-        """Get or create thread-local state."""
-        if not hasattr(self._local, 'state'):
-            self._local.state = ContextState()
-        return self._local.state
+        """Get current state."""
+        return self._state.get()
+
+    def _set_state(self, state: ContextState):
+        """Set new state."""
+        self._state.set(state)
 
     @property
     def current_session_id(self) -> Optional[str]:
@@ -1688,7 +1705,8 @@ class ThreadLocalContextStack:
 
     @current_session_id.setter
     def current_session_id(self, value: Optional[str]):
-        self._get_state().session_id = value
+        current = self._get_state()
+        self._set_state(ContextState(session_id=value, activity_id=current.activity_id, task_id=current.task_id))
 
     @property
     def current_activity_id(self) -> Optional[str]:
@@ -1696,7 +1714,8 @@ class ThreadLocalContextStack:
 
     @current_activity_id.setter
     def current_activity_id(self, value: Optional[str]):
-        self._get_state().activity_id = value
+        current = self._get_state()
+        self._set_state(ContextState(session_id=current.session_id, activity_id=value, task_id=current.task_id))
 
     @property
     def current_task_id(self) -> Optional[str]:
@@ -1704,30 +1723,31 @@ class ThreadLocalContextStack:
 
     @current_task_id.setter
     def current_task_id(self, value: Optional[str]):
-        self._get_state().task_id = value
+        current = self._get_state()
+        self._set_state(ContextState(session_id=current.session_id, activity_id=current.activity_id, task_id=value))
 
     def clear(self):
-        """Clear thread-local state."""
-        self._local.state = ContextState()
+        """Clear context state."""
+        self._state.set(ContextState())
 
 
-class ThreadSafeContextManager:
-    """Thread-safe context manager for concurrent agent access."""
+class SafeContextManager:
+    """Safe context manager for concurrent agent access."""
 
     def __init__(self, storage: ContextStorageABC):
         """
-        Initialize thread-safe context manager.
+        Initialize safe context manager.
 
         Args:
-            storage: Storage backend (should also be thread-safe)
+            storage: Storage backend (should also be thread/async safe)
         """
         self.storage = storage
-        self._context_stack = ThreadLocalContextStack()
-        self._lock = threading.RLock()  # Reentrant lock for nested operations
+        self._context_stack = SafeContextStack()
+        self._lock = threading.RLock()  # Lock for cross-thread storage access
 
     def create_session(self, session_id: str, original_ask: str,
                        high_level_plan: str) -> Session:
-        """Create session (thread-safe)."""
+        """Create session (concurrency-safe)."""
         with self._lock:
             session = self.storage.create_session(session_id, original_ask, high_level_plan)
             self._context_stack.current_session_id = session_id
@@ -1736,7 +1756,7 @@ class ThreadSafeContextManager:
     def create_activity(self, activity_id: str, session_id: str, description: str,
                         tags: list, mode: str, component: str,
                         planner_analysis: str) -> Activity:
-        """Create activity (thread-safe)."""
+        """Create activity (concurrency-safe)."""
         with self._lock:
             activity = self.storage.create_activity(
                 activity_id, session_id, description, tags, mode, component, planner_analysis
@@ -1746,22 +1766,22 @@ class ThreadSafeContextManager:
 
     def create_task(self, task_id: str, activity_id: str, description: str,
                     tags: list) -> Task:
-        """Create task (thread-safe)."""
+        """Create task (concurrency-safe)."""
         with self._lock:
             task = self.storage.create_task(task_id, activity_id, description, tags)
             self._context_stack.current_task_id = task_id
             return task
 
     def get_current_session_id(self) -> Optional[str]:
-        """Get current session ID for this thread."""
+        """Get current session ID for active context."""
         return self._context_stack.current_session_id
 
     def get_current_activity_id(self) -> Optional[str]:
-        """Get current activity ID for this thread."""
+        """Get current activity ID for active context."""
         return self._context_stack.current_activity_id
 
     def get_current_task_id(self) -> Optional[str]:
-        """Get current task ID for this thread."""
+        """Get current task ID for active context."""
         return self._context_stack.current_task_id
 
     @contextmanager

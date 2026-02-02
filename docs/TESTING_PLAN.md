@@ -53,36 +53,16 @@ This document outlines a comprehensive testing strategy for Cogneetree, covering
 
 ```
 tests/
-├── __init__.py
-├── conftest.py                          # Shared fixtures
-├── unit/
-│   ├── test_models.py
-│   ├── test_context_manager.py
-│   ├── test_hierarchical_retriever.py
-│   └── test_tag_normalization.py
-├── integration/
-│   ├── test_context_workflow.py
-│   ├── test_retrieval_workflow.py
-│   ├── test_semantic_retrieval.py
-│   └── test_multi_session_learning.py
-├── storage/
-│   ├── test_in_memory_storage.py
-│   ├── test_file_storage.py
-│   ├── test_sql_storage.py
-│   └── test_redis_storage.py
-├── performance/
-│   ├── test_retrieval_performance.py
-│   ├── test_storage_performance.py
-│   └── test_scaling.py
-├── effectiveness/
-│   ├── test_semantic_accuracy.py
-│   ├── test_proximity_weighting.py
-│   ├── test_context_quality.py
-│   └── test_agent_learning.py
-└── fixtures/
-    ├── sample_data.py
-    ├── knowledge_bases.py
-    └── test_scenarios.py
+├── test_agent_memory.py                       # High-level memory interface tests
+├── test_agentic_context_config.py             # Configuration system tests
+├── test_agentic_context_integration.py        # Full system integration
+├── test_agentic_context_manager.py            # Context creation & management tests
+├── test_agentic_context_retrieval_strategies.py # Retrieval logic tests
+├── test_agentic_context_semantic_retrieval.py # Semantic similarity tests
+├── test_agentic_context_storage.py            # Storage backend tests (SQLite, etc.)
+├── test_agentic_context_tag_normalization.py   # Tag processing tests
+├── test_agentic_context_workflow.py           # Multi-step agent workflow tests
+└── test_hierarchical_retriever.py             # Core hierarchy-aware retrieval tests
 ```
 
 ### Test Naming Convention
@@ -102,7 +82,7 @@ Examples:
 
 ### 1. Data Models Tests
 
-**File**: `tests/unit/test_models.py`
+**File**: `tests/test_agentic_context_manager.py`
 
 ```python
 """Tests for core data models."""
@@ -229,7 +209,7 @@ class TestTask:
 
 ### 2. Context Manager Tests
 
-**File**: `tests/unit/test_context_manager.py`
+**File**: `tests/test_agentic_context_manager.py`
 
 ```python
 """Tests for ContextManager."""
@@ -368,7 +348,7 @@ class TestContextManagerRecording:
 
 ### 3. Tag Normalization Tests
 
-**File**: `tests/unit/test_tag_normalization.py`
+**File**: `tests/test_agentic_context_tag_normalization.py`
 
 ```python
 """Tests for tag normalization utilities."""
@@ -439,7 +419,7 @@ class TestTagConsistency:
 
 ### 1. Full Workflow Tests
 
-**File**: `tests/integration/test_context_workflow.py`
+**File**: `tests/test_agentic_context_workflow.py`
 
 ```python
 """Integration tests for complete workflows."""
@@ -543,7 +523,7 @@ class TestCompleteWorkflow:
 
 ### 2. Retrieval Workflow Tests
 
-**File**: `tests/integration/test_retrieval_workflow.py`
+**File**: `tests/test_agentic_context_integration.py`
 
 ```python
 """Tests for retrieval workflows."""
@@ -1173,7 +1153,7 @@ class TestInMemoryStorage:
 
 ### 2. SQL Storage Tests
 
-**File**: `tests/storage/test_sql_storage.py`
+**File**: `tests/test_agentic_context_storage.py`
 
 ```python
 """Tests for SQLStorage."""
@@ -1316,13 +1296,13 @@ pytest -v
 pytest --cov=cogneetree --cov-report=html
 
 # Run specific test file
-pytest tests/unit/test_context_manager.py
+pytest tests/test_agentic_context_manager.py
 
 # Run specific test class
-pytest tests/unit/test_context_manager.py::TestContextManagerHierarchy
+pytest tests/test_agentic_context_manager.py::TestContextManager
 
 # Run specific test
-pytest tests/unit/test_context_manager.py::TestContextManagerHierarchy::test_create_session
+pytest tests/test_agentic_context_manager.py::TestContextManager::test_create_session
 
 # Run with markers
 pytest -m "not slow"  # Skip slow tests
@@ -1405,7 +1385,7 @@ start htmlcov\index.html  # Windows
 
 ```bash
 # Run performance tests with timing
-pytest tests/performance/ -v --durations=10
+pytest tests/ -k "performance" -v --durations=10
 ```
 
 ### Test Summary
