@@ -83,6 +83,172 @@ Session (Project/Conversation)
 3. **Proximity weighting**: Nearby items matter more; distant items still surface
 4. **Flexible retrieval**: Same data, multiple access patterns
 
+### Cascading Context Propagation
+
+Cogneetree implements a **Go-inspired context model** where decisions and learnings propagate upward through the hierarchy. This enables activities to share knowledge without explicit cross-referencing.
+
+```
+record_decision("Use JWT with RS256")
+       │
+       ├─► Task: ✓ stored (full detail + tags)
+       │
+       ├─► Activity: ✓ stored if semantically relevant
+       │   similarity("JWT with RS256", activity.description) > threshold?
+       │
+       ├─► Session: ✓ stored if relevant to project scope
+       │   similarity("JWT with RS256", session.original_ask) > threshold?
+       │
+       └─► Permanent Memory: ✓ stored if novel cross-project pattern
+```
+
+#### Why Cascading?
+
+In agentic workflows (coding, runbooks, multi-step tasks), decisions in one activity affect subsequent activities:
+
+```
+Session: "Build Ticketing System"
+│
+├── Activity 1: Auth & RBAC
+│   └── Decision: "Use JWT with RS256"
+│   └── Decision: "Roles: Admin > Manager > Agent > User"
+│
+├── Activity 2: User Management
+│   │
+│   │  NEEDS TO KNOW: Auth decisions (without re-asking or re-discovering)
+│   │  Gets it automatically from session.decisions
+│   │
+│   └── Decision: "Self-registration creates User role only"
+│
+├── Activity 3: Ticket Management
+│   │
+│   │  NEEDS TO KNOW: Auth + User decisions
+│   │
+│   └── ...
+```
+
+Without propagation, Activity 2 would need to:
+- Re-discover the auth approach by reading files
+- Ask the user again ("What auth method are we using?")
+- Guess (and potentially be inconsistent)
+
+#### What Propagates?
+
+| Category | Propagates? | Rationale |
+|----------|-------------|-----------|
+| **Decisions** | ✓ Yes | Architectural choices affect future work |
+| **Learnings** | ✓ Yes | Discovered knowledge informs future activities |
+| **Actions** | ✗ No | Task-specific ("Read RFC 7519" isn't useful elsewhere) |
+| **Results** | ✗ No | Task outcomes, not reusable knowledge |
+
+#### Semantic Gating
+
+Not all decisions are relevant at higher levels. Semantic similarity gates propagation:
+
+```python
+# Relevant to activity AND session - propagates
+record_decision("Use JWT with RS256", tags=["auth"])
+# similarity("JWT", "Implement authentication") = 0.72 → ✓ Activity
+# similarity("JWT", "Build ticketing system") = 0.45  → ✓ Session
+
+# Only relevant to task - stays local
+record_decision("Use 2-space indentation", tags=["formatting"])
+# similarity("2-space indent", "Implement auth") = 0.08 → ✗ Filtered
+```
+
+This prevents noise like formatting preferences from polluting session-level context.
+
+#### Deduplication
+
+Similar decisions are deduplicated at each level using word overlap:
+
+```python
+# First decision recorded
+record_decision("Use JWT with RS256 for token signing")
+
+# Similar decision - increments count instead of duplicating
+record_decision("JWT tokens should use RS256 algorithm")
+# word_overlap > 80% → count++ instead of new entry
+```
+
+Frequency becomes an implicit importance signal - decisions mentioned multiple times across tasks are more significant.
+
+### Evolved Data Models
+
+With cascading context propagation, the data models evolve to include accumulated decisions and learnings at each level:
+
+```python
+@dataclass
+class DecisionEntry:
+    """A decision or learning that has propagated to this level."""
+    content: str
+    timestamp: datetime
+    count: int = 1  # frequency signal for deduplication
+
+@dataclass
+class Session:
+    session_id: str
+    original_ask: str
+    high_level_plan: str
+    created_at: datetime
+
+    # Accumulated from activities (grouped by primary tag)
+    decisions: Dict[str, List[DecisionEntry]] = field(default_factory=dict)
+    learnings: Dict[str, List[DecisionEntry]] = field(default_factory=dict)
+
+@dataclass
+class Activity:
+    activity_id: str
+    session_id: str
+    description: str
+    tags: List[str]
+    mode: str
+    component: str
+
+    # Accumulated from tasks (grouped by primary tag)
+    decisions: Dict[str, List[DecisionEntry]] = field(default_factory=dict)
+    learnings: Dict[str, List[DecisionEntry]] = field(default_factory=dict)
+
+@dataclass
+class Task:
+    task_id: str
+    activity_id: str
+    description: str
+    tags: List[str]
+    result: Optional[str] = None
+
+    # Direct items recorded in this task
+    decisions: List[DecisionEntry] = field(default_factory=list)
+    learnings: List[DecisionEntry] = field(default_factory=list)
+
+@dataclass
+class PermanentMemory:
+    """Cross-session memory that persists across all projects."""
+    decisions: Dict[str, List[DecisionEntry]] = field(default_factory=dict)
+    learnings: Dict[str, List[DecisionEntry]] = field(default_factory=dict)
+```
+
+#### Recall Results
+
+When recalling context, the result includes both session state and searched items:
+
+```python
+@dataclass
+class SessionContext:
+    """Current accumulated knowledge at session level."""
+    decisions: Dict[str, List[str]]  # grouped by tag
+    learnings: Dict[str, List[str]]  # grouped by tag
+
+@dataclass
+class RecallResult:
+    """Result of memory.recall()."""
+    session: SessionContext           # Always included, not searched
+    items: List[ContextResult]        # Searched by relevance
+```
+
+This separation ensures that:
+- **Session context** is always available (the "what we know so far")
+- **Searched items** provide relevant historical detail when needed
+
 ### Core Principles
 
 | Principle | Meaning | Example |
@@ -137,30 +303,42 @@ task = manager.create_task(
     tags=["jwt", "structure"]
 )
 
-# Record learning
+# Record learning (propagates to Activity → Session → Permanent if relevant)
 manager.record_learning(
     "JWT consists of three parts separated by dots: header.payload.signature",
     tags=["jwt", "structure"]
 )
 
-# Record decision
+# Record decision (propagates to Activity → Session → Permanent if relevant)
 manager.record_decision(
     "Use HS256 algorithm for token signing",
     tags=["jwt", "algorithm"]
 )
 
-# Record action
+# Record action (stays at task level - task-specific)
 manager.record_action(
     "Analyzed IETF JWT RFC specification",
     tags=["jwt", "research"]
 )
 
-# Record result
+# Record result (stays at task level - task outcome)
 manager.record_result(
     "Understanding of JWT structure and best practices",
     tags=["jwt", "structure"]
 )
 ```
+
+**Cascading Behavior:**
+
+| Method | Propagates? | Stored At |
+|--------|-------------|-----------|
+| `record_decision()` | ✓ Yes | Task → Activity → Session → Permanent (if relevant) |
+| `record_learning()` | ✓ Yes | Task → Activity → Session → Permanent (if relevant) |
+| `record_action()` | ✗ No | Task only |
+| `record_result()` | ✗ No | Task only |
+
+Decisions and learnings are **reusable knowledge** that informs future work.
+Actions and results are **task-specific** and don't need to propagate.
 
 ### 2. AgentMemory
 
@@ -170,16 +348,30 @@ High-level interface optimized for AI agents. Wraps HierarchicalRetriever with c
 - Semantic and hierarchical retrieval
 - Context building for LLM prompts
 - Scope management (micro/balanced/macro)
+- **Cascading context propagation** (decisions/learnings bubble up)
 
-**ContextResult Model**:
+**RecallResult Model** (updated with session context):
 ```python
 @dataclass
+class SessionContext:
+    """Accumulated decisions and learnings at session level."""
+    decisions: Dict[str, List[str]]  # grouped by primary tag
+    learnings: Dict[str, List[str]]  # grouped by primary tag
+
+@dataclass
 class ContextResult:
+    """Individual searched item."""
     content: str
     category: str      # "decision", "learning", "action", "result"
     source: str        # Human readable: "Project X, Task Y"
     confidence: float  # Relevance score (0.0 to 1.0)
     explanation: Optional[Dict[str, Any]] = None
+
+@dataclass
+class RecallResult:
+    """Combined result from memory.recall()."""
+    session: SessionContext        # Always included (current project state)
+    items: List[ContextResult]     # Searched by relevance
 ```
 
 **Key Methods**:
@@ -189,27 +381,44 @@ from cogneetree import AgentMemory
 
 memory = AgentMemory(manager.storage, current_task_id="task_jwt_structure_001")
 
-# Simple recall (returns List[ContextResult])
-results = memory.recall("JWT validation strategies")
+# Recall returns session context + searched items
+result = memory.recall("JWT validation strategies")
 
-# Specify scope
-results_focused = memory.recall(
+# Session context - accumulated decisions/learnings (always available)
+print("Project decisions so far:")
+for tag, decisions in result.session.decisions.items():
+    print(f"  [{tag}]: {decisions}")
+
+# Searched items - relevant historical context
+print("Relevant history:")
+for item in result.items:
+    print(f"  [{item.category}] {item.content} (score: {item.confidence})")
+
+# Specify scope for searched items
+result_focused = memory.recall(
     "JWT validation",
-    scope="micro"  # Only this task
+    scope="micro"  # Only search this task
 )
 
-results_balanced = memory.recall(
+result_balanced = memory.recall(
     "authentication patterns",
-    scope="balanced"  # Current session + related history
+    scope="balanced"  # Search current session + related history
 )
 
-# Build context for LLM
+# Build context for LLM (includes session context + relevant items)
 context_str = memory.build_context(
     query="How should we validate JWT tokens?",
     max_items=5
 )
 # Returns formatted markdown ready for prompt injection
 ```
+
+**Session Context vs Searched Items:**
+
+| Source | Included | Scored | Purpose |
+|--------|----------|--------|---------|
+| `result.session` | Always | No | "What we know so far" - accumulated decisions/learnings |
+| `result.items` | If relevant | Yes | "Related past work" - searched by semantic similarity |
 
 ### 3. Storage Backend (ContextStorageABC)
 
@@ -563,6 +772,180 @@ balanced_context = memory.recall(
     scope="balanced"  # Default: task + history
 )
 ```
+
+### Pattern 5: Semantic Gating for Context Propagation
+
+Control what decisions propagate up the hierarchy using semantic similarity thresholds:
+
+```python
+from cogneetree import AgentMemory
+
+memory = AgentMemory(
+    storage=manager.storage,
+    current_task_id="impl_auth",
+    # Configure gating thresholds
+    activity_threshold=0.5,   # Must be 50% relevant to activity
+    session_threshold=0.4,    # Must be 40% relevant to session
+    permanent_threshold=0.3   # Must be 30% relevant to persist permanently
+)
+
+# This decision propagates to all levels
+memory.record_decision(
+    "Use JWT with RS256 for token signing",
+    tags=["auth", "jwt"]
+)
+# similarity to "Implement authentication" = 0.72 → ✓ Activity
+# similarity to "Build ticketing system" = 0.45   → ✓ Session
+# novel pattern → ✓ Permanent
+
+# This decision stays at task level only
+memory.record_decision(
+    "Use 2-space indentation in auth module",
+    tags=["formatting"]
+)
+# similarity to "Implement authentication" = 0.08 → ✗ Filtered
+# Doesn't pollute higher-level context
+```
+
+**Threshold Guidelines:**
+
+| Level | Suggested Threshold | Rationale |
+|-------|---------------------|-----------|
+| Activity | 0.5 | Moderately related to work area |
+| Session | 0.4 | Broadly related to project goals |
+| Permanent | 0.3 | Generalizable pattern (more abstract) |
+
+Lower thresholds at higher levels because relevance becomes more abstract.
+
+**Force Propagation (Escape Hatch):**
+
+When you know a decision is important but semantic similarity might miss it:
+
+```python
+# Force propagation regardless of similarity score
+memory.record_decision(
+    "All async functions must handle cancellation",
+    tags=["architecture"],
+    promote=True  # Bypasses semantic gating
+)
+```
+
+### Pattern 6: Agentic Workflow with Cascading Context
+
+Complete example of an agentic coding workflow where context cascades between activities:
+
+```python
+from cogneetree import AgentMemory
+
+# Initialize memory for a multi-activity project
+memory = AgentMemory()
+
+# Start the project session
+memory.start_session(
+    session_id="ticketing_001",
+    original_ask="Build a ticketing system for customer support",
+    high_level_plan="Auth & RBAC → User Management → Tickets → Alerts → Reports"
+)
+
+# ============================================
+# Activity 1: Authentication & RBAC
+# ============================================
+memory.start_activity(
+    activity_id="auth_rbac",
+    description="Implement authentication and role-based access control",
+    tags=["auth", "rbac", "security"]
+)
+
+memory.start_task(
+    task_id="design_auth",
+    description="Design the authentication flow",
+    tags=["auth", "design"]
+)
+
+# Decisions that propagate up (relevant to session)
+memory.record_decision("Use JWT with RS256 for token signing", tags=["auth"])
+memory.record_decision("Store refresh tokens in httpOnly cookies", tags=["auth", "security"])
+memory.record_decision("Role hierarchy: Admin > Manager > Agent > User", tags=["rbac"])
+memory.record_decision("Permissions are additive, not subtractive", tags=["rbac"])
+
+# Learning that propagates
+memory.record_learning("RS256 requires public/private key pair distribution", tags=["auth", "ops"])
+
+# Decision that stays local (not relevant to session)
+memory.record_decision("Use 2-space indentation in auth module", tags=["formatting"])
+
+memory.complete_task("design_auth", result="Auth flow designed")
+memory.complete_activity("auth_rbac")
+
+# ============================================
+# Activity 2: User Management
+# ============================================
+memory.start_activity(
+    activity_id="user_mgmt",
+    description="Implement user registration, profiles, and role assignment",
+    tags=["users", "management"]
+)
+
+# Agent immediately has context from Activity 1
+result = memory.recall("user role assignment")
+
+print("Session decisions available:")
+for tag, decisions in result.session.decisions.items():
+    print(f"  [{tag}]")
+    for d in decisions:
+        print(f"    - {d}")
+
+# Output:
+# Session decisions available:
+#   [auth]
+#     - Use JWT with RS256 for token signing
+#     - Store refresh tokens in httpOnly cookies
+#   [rbac]
+#     - Role hierarchy: Admin > Manager > Agent > User
+#     - Permissions are additive, not subtractive
+
+# Agent uses this context to make informed decisions
+memory.start_task(
+    task_id="user_registration",
+    description="Implement user self-registration",
+    tags=["users", "registration"]
+)
+
+# New decisions that also propagate
+memory.record_decision("Self-registration creates User role only", tags=["users", "rbac"])
+memory.record_decision("Email verification required before activation", tags=["users", "security"])
+
+memory.complete_task("user_registration", result="Registration flow complete")
+
+# ============================================
+# Activity 3: Ticket Management
+# ============================================
+memory.start_activity(
+    activity_id="tickets",
+    description="Implement ticket creation, assignment, and lifecycle",
+    tags=["tickets", "workflow"]
+)
+
+# Now agent sees ALL accumulated decisions
+result = memory.recall("ticket permissions")
+
+# Session now contains decisions from both Activity 1 and Activity 2
+# Agent knows:
+# - JWT auth with RS256
+# - 4-tier role hierarchy
+# - Additive permissions
+# - Self-registration = User role only
+
+# Agent can make informed decisions about ticket access control
+# without re-asking about auth architecture
+```
+
+**Key Benefits:**
+
+1. **No re-discovery**: Activity 2 doesn't need to read auth code to know the approach
+2. **No repeated questions**: Agent doesn't ask "what auth are we using?" again
+3. **Consistent architecture**: All activities work with the same decisions
+4. **Automatic relevance**: Only pertinent decisions propagate (2-space indent filtered out)
 
 ---
 
