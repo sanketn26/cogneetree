@@ -291,6 +291,48 @@ manager.record_learning(
 print("✅ Decisions recorded for future agents")
 ```
 
+## Current Limitations
+
+Be aware of these limitations when integrating:
+
+1. **No token budget control** - `build_context(max_items=N)` limits by item count, not token count. For token-optimal prompts, you'll need to estimate tokens yourself:
+
+   ```python
+   # Workaround: estimate tokens and trim
+   context = memory.recall("query", max_items=10)
+   selected = []
+   token_count = 0
+   for item in context:
+       # Rough estimate: 1 token ≈ 4 chars
+       item_tokens = len(item.content) // 4
+       if token_count + item_tokens > 2000:
+           break
+       selected.append(item)
+       token_count += item_tokens
+   ```
+
+2. **No cross-session persistence by default** - InMemoryStorage loses data when the process ends. Use `JsonFileStorage` for persistence:
+
+   ```python
+   from cogneetree.storage.file_storage import JsonFileStorage
+   storage = JsonFileStorage("./memory.json")
+   manager = ContextManager(storage=storage)
+   ```
+
+3. **Memory grows unbounded** - No automatic expiration, summarization, or forgetting. For long-running agents, periodically review stored items.
+
+4. **No conflict detection** - If different sessions record contradictory decisions, the system doesn't flag this. Agents should review confidence scores and sources carefully.
+
+5. **Semantic retrieval requires optional dependencies** - Without `sentence-transformers` or `openai`, retrieval is tag-based only. Install for best results:
+
+   ```bash
+   pip install sentence-transformers  # Local embeddings
+   # OR
+   pip install openai  # OpenAI embeddings (requires API key)
+   ```
+
+6. **Not thread-safe** - Use separate `ContextManager` instances per thread. Shared storage across threads is not supported.
+
 ## Performance Notes
 
 - **Micro scope**: O(1) - just current task items
@@ -298,6 +340,74 @@ print("✅ Decisions recorded for future agents")
 - **Macro scope**: O(N) where N = all items in storage
 
 **Recommendation:** Use balanced scope (default) for most work. Use micro for focused tasks. Use macro when explicitly learning patterns.
+
+## Token Optimization Strategies
+
+Since the goal is to be as effective as LLMs while being optimal with token usage, follow these strategies:
+
+### 1. Use the Right Scope
+
+Scope directly controls how many items are searched and returned. Narrower scope = fewer tokens.
+
+```python
+# Tight focus (fewest tokens) - use when you know context is local
+context = memory.recall("bug in auth", scope="micro")
+
+# Normal work (moderate tokens) - default, good tradeoff
+context = memory.recall("auth patterns", scope="balanced")
+
+# Pattern discovery (most tokens) - use sparingly
+context = memory.recall("auth patterns", scope="macro")
+```
+
+### 2. Limit Items Aggressively
+
+```python
+# Don't request more than you need
+context = memory.build_context("question", max_items=3)  # Not 10
+```
+
+### 3. Filter by Category
+
+If you only need decisions, don't pull learnings and actions too:
+
+```python
+decisions = memory.decisions("JWT signing")  # Only decisions
+learnings = memory.learnings("JWT")          # Only learnings
+```
+
+### 4. Use Confidence Thresholds
+
+Low-confidence results add tokens without adding value:
+
+```python
+results = memory.recall("JWT")
+relevant = [r for r in results if r.confidence > 0.6]
+```
+
+### 5. Record Concisely
+
+What you record today becomes tokens consumed tomorrow. Be concise:
+
+```python
+# Good: concise, searchable
+manager.record_decision("Use RS256 for JWT signing - supports key rotation")
+
+# Bad: verbose, wastes future tokens
+manager.record_decision("After careful consideration of all the available signing algorithms including HS256, RS256, ES256, and PS256, we have decided to use RS256 because it supports key rotation which is important for our microservices architecture where we need to distribute public keys...")
+```
+
+### 6. Tag Precisely
+
+Better tags = better retrieval = fewer irrelevant results = fewer wasted tokens:
+
+```python
+# Good: specific tags for precise retrieval
+manager.record_learning("RS256 requires public key distribution", tags=["jwt", "key-management", "ops"])
+
+# Bad: generic tags pull in noise
+manager.record_learning("RS256 requires public key distribution", tags=["auth"])
+```
 
 ## Best Practices for Agents
 

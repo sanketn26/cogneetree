@@ -1443,6 +1443,204 @@ jobs:
 
 ---
 
+## Gap Coverage Tests
+
+These tests cover the gaps identified in the architecture review. They should be implemented alongside the Phase 0 roadmap features.
+
+### Token Budget Tests
+
+**File**: `tests/test_token_budget.py`
+
+```python
+"""Tests for token-aware context building."""
+
+import pytest
+from cogneetree import ContextManager, AgentMemory
+
+
+class TestTokenBudget:
+    """Test token-aware context building."""
+
+    def test_build_context_respects_max_tokens(self):
+        """Test that build_context stays within token budget."""
+        manager = ContextManager()
+        manager.create_session("s1", "Test", "Test")
+        manager.create_activity("a1", "s1", "Activity", ["test"], "learner", "core", "...")
+        manager.create_task("t1", "a1", "Task", ["test"])
+
+        # Add items of known size
+        for i in range(10):
+            manager.record_learning(
+                f"Learning {i}: " + "x" * 200,  # ~50 tokens each
+                tags=["test"]
+            )
+
+        memory = AgentMemory(manager.storage, current_task_id="t1")
+        context = memory.build_context("test", max_tokens=200)
+
+        # Rough estimate: context should be ~200 tokens or less
+        estimated_tokens = len(context) // 4
+        assert estimated_tokens <= 250  # Allow some overhead for formatting
+
+    def test_build_context_returns_highest_relevance_within_budget(self):
+        """Test that token-limited context prioritizes high-relevance items."""
+        manager = ContextManager()
+        manager.create_session("s1", "JWT Auth", "Build JWT")
+        manager.create_activity("a1", "s1", "Auth", ["jwt"], "learner", "core", "...")
+        manager.create_task("t1", "a1", "Task", ["jwt"])
+
+        manager.record_decision("Use RS256 for JWT signing", tags=["jwt"])
+        manager.record_learning("Unrelated padding content " * 20, tags=["other"])
+
+        memory = AgentMemory(manager.storage, current_task_id="t1")
+        context = memory.build_context("JWT signing", max_tokens=100)
+
+        assert "RS256" in context
+
+    def test_token_estimation_accuracy(self):
+        """Test that token estimation is reasonably accurate."""
+        memory = AgentMemory.__new__(AgentMemory)
+        # 400 chars ≈ 100 tokens
+        from cogneetree import ContextResult
+        item = ContextResult(
+            content="x" * 400,
+            category="learning",
+            source="test",
+            confidence=0.9
+        )
+        tokens = memory._estimate_tokens(item)
+        assert 80 <= tokens <= 150  # Reasonable range
+
+
+class TestImportanceTiers:
+    """Test importance-based scoring."""
+
+    def test_critical_items_rank_higher(self):
+        """Test that critical items rank above normal items."""
+        manager = ContextManager()
+        manager.create_session("s1", "Test", "Test")
+        manager.create_activity("a1", "s1", "Activity", ["test"], "learner", "core", "...")
+        manager.create_task("t1", "a1", "Task", ["test"])
+
+        manager.record_decision(
+            "Use microservices architecture",
+            tags=["architecture"],
+            importance="critical"
+        )
+        manager.record_decision(
+            "Use 2-space indentation",
+            tags=["formatting"],
+            importance="low"
+        )
+
+        memory = AgentMemory(manager.storage, current_task_id="t1")
+        results = memory.recall("architecture decisions")
+
+        # Critical item should rank higher
+        if len(results) >= 2:
+            critical_idx = next(
+                (i for i, r in enumerate(results) if "microservices" in r.content), None
+            )
+            low_idx = next(
+                (i for i, r in enumerate(results) if "indentation" in r.content), None
+            )
+            if critical_idx is not None and low_idx is not None:
+                assert critical_idx < low_idx
+
+
+class TestConflictDetection:
+    """Test conflict detection in cross-session retrieval."""
+
+    def test_detect_contradictory_decisions(self):
+        """Test that contradictory decisions are flagged."""
+        manager = ContextManager()
+
+        # Session 1: Choose HS256
+        manager.create_session("s1", "Project A", "Auth")
+        manager.create_activity("a1", "s1", "Auth", ["jwt"], "builder", "core", "...")
+        manager.create_task("t1", "a1", "Choose algorithm", ["jwt"])
+        manager.record_decision("Use HS256 for JWT signing", tags=["jwt", "algorithm"])
+
+        # Session 2: Choose RS256
+        manager.create_session("s2", "Project B", "Auth")
+        manager.create_activity("a2", "s2", "Auth", ["jwt"], "builder", "core", "...")
+        manager.create_task("t2", "a2", "Choose algorithm", ["jwt"])
+        manager.record_decision("Use RS256 for JWT signing", tags=["jwt", "algorithm"])
+
+        memory = AgentMemory(manager.storage, current_task_id="t2")
+        result = memory.recall("JWT signing algorithm", scope="macro", detect_conflicts=True)
+
+        # Should detect conflict
+        assert len(result.conflicts) > 0
+        assert result.conflicts[0].conflict_type == "contradiction"
+```
+
+### Cascading Propagation Tests
+
+**File**: `tests/test_cascading_propagation.py`
+
+```python
+"""Tests for cascading context propagation."""
+
+import pytest
+from cogneetree import ContextManager, AgentMemory
+
+
+class TestCascadingPropagation:
+    """Test that decisions/learnings cascade through the hierarchy."""
+
+    def test_decision_propagates_to_activity(self):
+        """Test that relevant decisions propagate to activity level."""
+        manager = ContextManager()
+        manager.create_session("s1", "Build auth system", "JWT-based")
+        manager.create_activity("a1", "s1", "Implement authentication", ["auth"], "builder", "core", "...")
+        manager.create_task("t1", "a1", "Design auth flow", ["auth"])
+
+        manager.record_decision("Use JWT with RS256", tags=["auth"])
+
+        # Activity should have accumulated this decision
+        activity = manager.storage.get_activity("a1")
+        assert "auth" in activity.decisions
+        assert any("RS256" in d.content for d in activity.decisions["auth"])
+
+    def test_irrelevant_decision_stays_at_task(self):
+        """Test that irrelevant decisions don't propagate."""
+        manager = ContextManager()
+        manager.create_session("s1", "Build auth system", "JWT-based")
+        manager.create_activity("a1", "s1", "Implement auth", ["auth"], "builder", "core", "...")
+        manager.create_task("t1", "a1", "Code formatting", ["formatting"])
+
+        manager.record_decision("Use 2-space indentation", tags=["formatting"])
+
+        # Activity should NOT have this decision
+        activity = manager.storage.get_activity("a1")
+        formatting_decisions = activity.decisions.get("formatting", [])
+        assert len(formatting_decisions) == 0
+
+    def test_activity2_sees_activity1_decisions(self):
+        """Test that a new activity sees decisions from previous activities."""
+        manager = ContextManager()
+        manager.create_session("s1", "Build ticketing system", "Full stack")
+
+        # Activity 1: Auth
+        manager.create_activity("a1", "s1", "Authentication", ["auth"], "builder", "core", "...")
+        manager.create_task("t1", "a1", "Design auth", ["auth"])
+        manager.record_decision("Use JWT with RS256", tags=["auth"])
+        manager.record_decision("Role hierarchy: Admin > User", tags=["rbac"])
+
+        # Activity 2: User Management
+        manager.create_activity("a2", "s1", "User management", ["users"], "builder", "core", "...")
+        manager.create_task("t2", "a2", "User registration", ["users"])
+
+        memory = AgentMemory(manager.storage, current_task_id="t2")
+        result = memory.recall("user role assignment")
+
+        # Should find auth decisions from Activity 1 via session context
+        assert any("Role hierarchy" in item.content for item in result.items)
+```
+
+---
+
 ## Effectiveness Evaluation Checklist
 
 Use this checklist to assess whether Cogneetree effectively builds long-term memory:
@@ -1481,6 +1679,29 @@ Use this checklist to assess whether Cogneetree effectively builds long-term mem
 - [ ] Linear scaling as items grow
 - [ ] Write throughput sufficient for real-time recording
 - [ ] Storage backends scale appropriately
+
+### Token Efficiency (New)
+
+- [ ] `build_context(max_tokens=N)` stays within budget
+- [ ] High-relevance items selected first within token budget
+- [ ] Token estimation within 20% of actual token count
+- [ ] Importance tiers correctly influence ranking
+- [ ] Critical items survive token budget trimming
+
+### Context Propagation (New)
+
+- [ ] Decisions propagate from Task → Activity when semantically relevant
+- [ ] Decisions propagate from Activity → Session when relevant
+- [ ] Irrelevant items filtered by semantic gating
+- [ ] Subsequent activities see accumulated session decisions
+- [ ] Deduplication prevents duplicate entries at each level
+- [ ] `promote=True` bypasses semantic gating
+
+### Conflict Detection (New)
+
+- [ ] Contradictory decisions across sessions are flagged
+- [ ] Conflict warnings include both items and explanation
+- [ ] Non-contradictory similar decisions are not flagged
 
 ---
 

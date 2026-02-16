@@ -131,6 +131,58 @@ Each document serves its audience:
 
 No redundancy. Each doc references the others. Users find what they need quickly.
 
+## Implementation Status
+
+Not everything documented is fully implemented yet. This transparency helps you know what to rely on today vs what's coming.
+
+### Fully Implemented
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Three-level hierarchy (Session/Activity/Task) | Shipped | Core architecture, fully tested |
+| Four retrieval modes (micro/balanced/macro/selected) | Shipped | All 4 modes working |
+| Scoring: semantic x proximity x temporal | Shipped | Configurable weights |
+| AgentMemory interface (recall, decisions, learnings, build_context) | Shipped | 21 tests passing |
+| InMemoryStorage | Shipped | Default backend, complete |
+| JsonFileStorage | Shipped | Extends InMemoryStorage with JSON persistence |
+| Tag normalization | Shipped | With synonym mapping |
+| ContextWorkflow (context managers) | Shipped | 22 tests passing |
+| Retrieval presets (fresh/balanced/learn_from_all/debug) | Shipped | Ready to use |
+
+### Partially Implemented
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| SQLiteStorage | Tables created, methods partial | Not production-ready |
+| RedisStorage | Basic structure, incomplete | Not production-ready |
+| Semantic retrieval | Working but requires optional deps | `sentence-transformers` or `openai` needed |
+
+### Documented but Not Yet Implemented
+
+| Feature | Documented In | Notes |
+|---------|---------------|-------|
+| Cascading context propagation (decisions bubble up) | IMPLEMENTATION_GUIDE | Designed, not in code yet |
+| RecallResult with SessionContext separation | IMPLEMENTATION_GUIDE | recall() returns flat list today |
+| Permanent Memory (cross-session layer) | IMPLEMENTATION_GUIDE | No persistent cross-session layer |
+| Semantic gating for propagation | IMPLEMENTATION_GUIDE | Depends on cascading propagation |
+| DecisionEntry deduplication by word overlap | IMPLEMENTATION_GUIDE | Designed, not coded |
+| Inspector web UI | INSPECTOR_GUIDE | Full design spec, not implemented |
+
+### Known Gaps (Not Yet Documented Elsewhere)
+
+These are architectural gaps that affect the "optimal token usage" goal:
+
+1. **No token budget management** - `build_context(max_items=N)` limits by count, not tokens. No way to say "give me context that fits in 2000 tokens."
+2. **No memory consolidation/forgetting** - Memory grows unbounded. Old, low-value items never expire or get summarized.
+3. **No conflict detection** - Contradictory decisions across sessions aren't flagged (e.g., "Use HS256" vs "Use RS256").
+4. **No importance tiers** - All items treated equally. No way to mark critical vs minor knowledge.
+5. **No async API** - Blocking calls only. Multi-agent concurrent systems need async support.
+6. **No MCP server integration** - Not yet exposed as Model Context Protocol tools.
+
+See [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md#roadmap-features-detailed-implementation) for the detailed roadmap.
+
+---
+
 ## Need Help?
 
 - Check the relevant document above

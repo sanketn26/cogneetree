@@ -1253,8 +1253,15 @@ By following these patterns, agents can compound expertise across projects and m
 
 This section provides detailed implementation guides for planned features that will differentiate Cogneetree from competitors.
 
+> **Implementation Status Note**: Features described above in "Basic Implementation" and "Advanced Patterns" sections represent a mix of implemented and planned functionality. The cascading context propagation (Pattern 5, Pattern 6), RecallResult with SessionContext, Permanent Memory layer, and semantic gating are **designed but not yet implemented** in code. The core hierarchy, retrieval modes, AgentMemory interface, and InMemoryStorage/JsonFileStorage are fully working. See [DOCUMENTATION.md](DOCUMENTATION.md#implementation-status) for the complete status matrix.
+
 ### Table of Contents - Roadmap
 
+- [Phase 0: Token Optimization & Core Gaps](#phase-0-token-optimization--core-gaps)
+  - [0.1 Token-Aware Context Building](#01-token-aware-context-building)
+  - [0.2 Implement Cascading Context Propagation](#02-implement-cascading-context-propagation)
+  - [0.3 Conflict Detection](#03-conflict-detection)
+  - [0.4 Importance Tiers](#04-importance-tiers)
 - [Phase 1: Critical Fixes](#phase-1-critical-fixes)
   - [1.1 Complete Storage Backends](#11-complete-storage-backends)
   - [1.2 Persistent Embedding Cache](#12-persistent-embedding-cache)
@@ -1272,6 +1279,166 @@ This section provides detailed implementation guides for planned features that w
   - [4.1 Multi-Agent Shared Memory](#41-multi-agent-shared-memory)
   - [4.2 REST API Wrapper](#42-rest-api-wrapper)
   - [4.3 Structured Output Integration](#43-structured-output-integration)
+  - [4.4 MCP Server Integration](#44-mcp-server-integration)
+
+---
+
+## Phase 0: Token Optimization & Core Gaps
+
+These address the most critical gaps for the stated goal of being "optimal with token usage."
+
+### 0.1 Token-Aware Context Building
+
+**Problem**: `build_context(max_items=N)` limits by count, not tokens. 3 verbose items might consume 4000 tokens while 3 concise items use only 200. Agents can't specify a token budget.
+
+**Solution**: Add `max_tokens` parameter with token estimation.
+
+```python
+class AgentMemory:
+    def build_context(
+        self,
+        query: str,
+        max_items: int = 5,
+        max_tokens: Optional[int] = None,  # NEW: token budget
+        scope: str = "balanced",
+    ) -> str:
+        results = self.recall(query, scope=scope, max_items=max_items * 2)
+
+        if max_tokens:
+            selected = []
+            token_count = 0
+            for item in results:
+                item_tokens = self._estimate_tokens(item)
+                if token_count + item_tokens > max_tokens:
+                    break
+                selected.append(item)
+                token_count += item_tokens
+            results = selected
+        else:
+            results = results[:max_items]
+
+        return self._format_context(results)
+
+    @staticmethod
+    def _estimate_tokens(item: ContextResult) -> int:
+        """Estimate token count. ~4 chars per token for English text."""
+        # Include formatting overhead (category label, source, newlines)
+        overhead = 30  # ~30 tokens for metadata formatting
+        content_tokens = len(item.content) // 4
+        return overhead + content_tokens
+```
+
+**Why this matters**: Agents operating with 4K-8K context windows waste budget on verbose history. Token-aware building lets agents say "give me the best context that fits in 1500 tokens."
+
+### 0.2 Implement Cascading Context Propagation
+
+**Problem**: The IMPLEMENTATION_GUIDE describes cascading propagation (decisions bubble up through Activity → Session → Permanent with semantic gating), but the actual code stores items flat with `parent_id` only. This means Activity 2 can't automatically see Activity 1's decisions without explicit retrieval.
+
+**Solution**: Implement the designed propagation system in `ContextManager.record_decision()` and `record_learning()`.
+
+```python
+class ContextManager:
+    def record_decision(self, content: str, tags: List[str] = None,
+                        promote: bool = False) -> None:
+        """Record decision with cascading propagation."""
+        # Step 1: Always store at task level
+        self._store_at_task(content, ContextCategory.DECISION, tags)
+
+        # Step 2: Propagate to activity if relevant
+        activity = self.storage.get_current_activity()
+        if activity and (promote or self._is_relevant(content, activity.description)):
+            self._propagate_to_activity(content, activity, tags)
+
+        # Step 3: Propagate to session if relevant
+        session = self.storage.get_current_session()
+        if session and (promote or self._is_relevant(content, session.original_ask)):
+            self._propagate_to_session(content, session, tags)
+
+    def _is_relevant(self, content: str, context_description: str) -> bool:
+        """Semantic gating: is this content relevant to the context?"""
+        if self.embedding_model:
+            similarity = self.embedding_model.similarity(content, context_description)
+            return similarity >= self.config.propagation_threshold
+        # Fallback: tag overlap
+        return self._tag_overlap(content, context_description) > 0.3
+```
+
+**Effort**: 3-4 days (includes DecisionEntry model, deduplication, tests)
+
+### 0.3 Conflict Detection
+
+**Problem**: When Session A records "Use HS256" and Session B records "Use RS256", an agent querying across sessions gets both without knowing they conflict.
+
+**Solution**: Add contradiction detection during retrieval.
+
+```python
+@dataclass
+class ConflictWarning:
+    """Warning about contradictory decisions."""
+    item_a: ContextResult
+    item_b: ContextResult
+    conflict_type: str  # "contradiction", "superseded", "ambiguous"
+    explanation: str
+
+class AgentMemory:
+    def recall(self, query: str, scope: str = "balanced",
+               detect_conflicts: bool = True) -> RecallResult:
+        results = self._retrieve(query, scope)
+
+        conflicts = []
+        if detect_conflicts and scope in ("balanced", "macro"):
+            conflicts = self._detect_conflicts(results)
+
+        return RecallResult(items=results, conflicts=conflicts)
+
+    def _detect_conflicts(self, items: List[ContextResult]) -> List[ConflictWarning]:
+        """Detect contradictory decisions in results."""
+        decisions = [i for i in items if i.category == "decision"]
+        conflicts = []
+        for i, a in enumerate(decisions):
+            for b in decisions[i+1:]:
+                if self._are_contradictory(a, b):
+                    conflicts.append(ConflictWarning(
+                        item_a=a, item_b=b,
+                        conflict_type="contradiction",
+                        explanation=f"Conflicting decisions from different sessions"
+                    ))
+        return conflicts
+```
+
+**Effort**: 2 days
+
+### 0.4 Importance Tiers
+
+**Problem**: All recorded items are treated equally. A critical architectural decision ("Use microservices") and a minor observation ("Logging is verbose") have the same weight.
+
+**Solution**: Add optional importance parameter to recording methods.
+
+```python
+class Importance(Enum):
+    CRITICAL = "critical"    # Architectural decisions, security choices
+    NORMAL = "normal"        # Default for most items
+    LOW = "low"              # Minor observations, style preferences
+
+class ContextManager:
+    def record_decision(self, content: str, tags: List[str] = None,
+                        importance: Importance = Importance.NORMAL) -> None:
+        item = ContextItem(
+            content=content,
+            category=ContextCategory.DECISION,
+            tags=tags or [],
+            parent_id=self.storage.current_task_id,
+            metadata={"importance": importance.value}
+        )
+        self.storage.add_item(item)
+
+# During retrieval, importance acts as a score multiplier:
+# critical: 1.5x, normal: 1.0x, low: 0.5x
+```
+
+**Why this matters**: When token budget is tight, importance tiers let the system prioritize critical decisions over minor observations. This directly supports the "optimal token usage" goal.
+
+**Effort**: 1 day
 
 ---
 
@@ -6379,10 +6546,76 @@ for result in security_learnings:
 
 ---
 
+### 4.4 MCP Server Integration
+
+**Problem**: Modern AI agents use the Model Context Protocol (MCP) for tool discovery and invocation. Without MCP support, agents need custom integration code to use Cogneetree.
+
+**Solution**: Expose Cogneetree operations as MCP tools.
+
+```python
+"""cogneetree.mcp - Model Context Protocol server for Cogneetree."""
+
+from cogneetree import AgentMemory
+
+# MCP tool definitions
+TOOLS = [
+    {
+        "name": "cogneetree_recall",
+        "description": "Recall relevant context from agent memory",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for"},
+                "scope": {"type": "string", "enum": ["micro", "balanced", "macro"], "default": "balanced"},
+                "max_items": {"type": "integer", "default": 5},
+                "max_tokens": {"type": "integer", "description": "Token budget for results"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "cogneetree_record",
+        "description": "Record a decision, learning, action, or result",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "category": {"type": "string", "enum": ["decision", "learning", "action", "result"]},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "importance": {"type": "string", "enum": ["critical", "normal", "low"], "default": "normal"}
+            },
+            "required": ["content", "category"]
+        }
+    },
+    {
+        "name": "cogneetree_context",
+        "description": "Build formatted context block for prompt injection",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "max_tokens": {"type": "integer", "default": 2000}
+            },
+            "required": ["question"]
+        }
+    }
+]
+```
+
+**Why this matters**: MCP is becoming the standard for agent-tool communication. Cogneetree as an MCP server means any MCP-compatible agent (Claude, GPT-based agents, etc.) can use it without custom code.
+
+**Effort**: 2 days
+
+---
+
 ## Summary: Implementation Roadmap
 
 | Phase | Feature | Priority | Effort |
 |-------|---------|----------|--------|
+| **0.1** | Token-Aware Context Building | Critical | 1 day |
+| **0.2** | Cascading Context Propagation | Critical | 3-4 days |
+| **0.3** | Conflict Detection | Critical | 2 days |
+| **0.4** | Importance Tiers | Critical | 1 day |
 | **1.1** | Complete Storage Backends | Critical | 2 days |
 | **1.2** | Persistent Embedding Cache | Critical | 2 days |
 | **1.3** | Thread-Safe Context | Critical | 1 day |
@@ -6396,8 +6629,11 @@ for result in security_learnings:
 | **4.1** | Multi-Agent Shared Memory | Medium | 3 days |
 | **4.2** | REST API Wrapper | Medium | 1 day |
 | **4.3** | Structured Output Integration | Low | 2 days |
+| **4.4** | MCP Server Integration | High | 2 days |
 
-**Total Estimated Effort**: ~25 days
+**Total Estimated Effort**: ~33 days
+
+**Phase 0 is the highest priority** - it directly addresses the core goal of optimal token usage and closes the gap between documented and implemented features. Without Phase 0, the system records and retrieves knowledge but doesn't guarantee efficient use of the LLM's context window.
 
 These implementations will transform Cogneetree from a solid foundation into a differentiated, production-ready memory system for AI agents.
 
