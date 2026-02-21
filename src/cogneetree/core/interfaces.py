@@ -92,6 +92,7 @@ class ContextStorageABC(ABC):
         tags: List[str],
         parent_id: Optional[str] = None,
         embedding: Optional[Any] = None,
+        tier: Optional[Any] = None,
     ) -> ContextItem:
         """Add a context item."""
         pass

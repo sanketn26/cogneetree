@@ -6,7 +6,7 @@ from typing import List, Dict, Optional, Any
 from enum import Enum
 
 from cogneetree.core.interfaces import ContextStorageABC, EmbeddingModelABC
-from cogneetree.core.models import ContextItem
+from cogneetree.core.models import ContextItem, ImportanceTier
 
 
 class HistoryMode(Enum):
@@ -326,13 +326,21 @@ class HierarchicalRetriever:
 
         return candidates
 
+    # Tier multipliers applied to the final score
+    _TIER_MULTIPLIERS = {
+        ImportanceTier.CRITICAL: 2.0,
+        ImportanceTier.MAJOR: 1.5,
+        ImportanceTier.MINOR: 1.0,
+        ImportanceTier.NOISE: 0.1,
+    }
+
     def _score_candidates(
         self,
         candidates: List[tuple[ContextItem, str, str, float]],
         query: str,
         config: RetrievalConfig,
     ) -> List[Dict[str, Any]]:
-        """Score candidates by semantic similarity × proximity weight."""
+        """Score candidates by semantic similarity × proximity weight × tier multiplier."""
         scored = []
 
         for item, source_session_id, source_location, proximity_weight in candidates:
@@ -355,13 +363,19 @@ class HierarchicalRetriever:
                 except Exception:
                     pass
 
-            # Final score = semantic × proximity
-            final_score = semantic_score * proximity_weight
+            # Importance tier multiplier
+            tier_multiplier = self._TIER_MULTIPLIERS.get(
+                getattr(item, "tier", ImportanceTier.MINOR), 1.0
+            )
+
+            # Final score = semantic × proximity × tier
+            final_score = semantic_score * proximity_weight * tier_multiplier
 
             result = {
                 "item": item,
                 "semantic_score": semantic_score,
                 "proximity_weight": proximity_weight,
+                "tier_multiplier": tier_multiplier,
                 "final_score": final_score,
             }
 
@@ -370,7 +384,11 @@ class HierarchicalRetriever:
                 result["explanation"] = {
                     "source_session_id": source_session_id,
                     "source_location": source_location,
-                    "why": f"Semantic match ({semantic_score:.2f}) × proximity ({proximity_weight:.2f})",
+                    "why": (
+                        f"Semantic match ({semantic_score:.2f}) × "
+                        f"proximity ({proximity_weight:.2f}) × "
+                        f"tier ({tier_multiplier:.1f})"
+                    ),
                 }
 
             scored.append(result)

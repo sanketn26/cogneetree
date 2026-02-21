@@ -113,17 +113,28 @@ class TaskContext:
         if task:
             self.manager.record_action(content, task.tags)
 
-    def record_decision(self, content: str):
-        """Record decision made."""
-        task = self.manager.get_current_task()
-        if task:
-            self.manager.record_decision(content, task.tags)
+    def record_decision(self, content: str, promote: bool = False):
+        """Record decision made.
 
-    def record_learning(self, content: str):
-        """Record learning."""
+        Args:
+            content: The decision text.
+            promote: When True, force propagation to Activity and Session regardless
+                     of relevance score.
+        """
         task = self.manager.get_current_task()
         if task:
-            self.manager.record_learning(content, task.tags)
+            self.manager.record_decision(content, task.tags, promote=promote)
+
+    def record_learning(self, content: str, promote: bool = False):
+        """Record learning.
+
+        Args:
+            content: The learning text.
+            promote: When True, force propagation to Activity and Session.
+        """
+        task = self.manager.get_current_task()
+        if task:
+            self.manager.record_learning(content, task.tags, promote=promote)
 
     def set_result(self, result: str):
         """Set task result."""

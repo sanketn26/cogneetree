@@ -6,6 +6,19 @@ from datetime import datetime
 from enum import Enum
 
 
+@dataclass
+class DecisionEntry:
+    """A decision or learning that has propagated to Activity or Session level.
+
+    The ``count`` field acts as an implicit importance signal: decisions
+    mentioned multiple times across tasks are more significant.
+    """
+
+    content: str
+    timestamp: datetime = field(default_factory=datetime.now)
+    count: int = 1
+
+
 class ContextCategory(Enum):
     """Context item categories."""
 
@@ -16,6 +29,25 @@ class ContextCategory(Enum):
     DECISION = "decision"
     LEARNING = "learning"
     RESULT = "result"
+
+
+class ImportanceTier(Enum):
+    """Importance tier for a context item.
+
+    Used as a score multiplier during retrieval so that critical knowledge
+    surfaces before minor notes even when semantic similarity is similar.
+
+    Multipliers applied in HierarchicalRetriever:
+        CRITICAL → 2.0   (architectural decisions, blockers)
+        MAJOR    → 1.5   (significant choices)
+        MINOR    → 1.0   (default, routine notes)
+        NOISE    → 0.1   (low-signal, can be suppressed)
+    """
+
+    CRITICAL = "critical"
+    MAJOR = "major"
+    MINOR = "minor"
+    NOISE = "noise"
 
 
 @dataclass
@@ -29,6 +61,7 @@ class ContextItem:
     parent_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     embedding: Optional[Any] = None
+    tier: "ImportanceTier" = field(default_factory=lambda: ImportanceTier.MINOR)
 
 
 @dataclass
@@ -39,6 +72,11 @@ class Session:
     original_ask: str
     high_level_plan: str
     created_at: datetime = field(default_factory=datetime.now)
+
+    # Accumulated decisions/learnings propagated up from tasks via activities.
+    # Keyed by primary tag for easy grouping (e.g. {"auth": [DecisionEntry, ...]}).
+    decisions: Dict[str, List["DecisionEntry"]] = field(default_factory=dict)
+    learnings: Dict[str, List["DecisionEntry"]] = field(default_factory=dict)
 
 
 @dataclass
@@ -52,6 +90,11 @@ class Activity:
     mode: str
     component: str
     planner_analysis: str
+
+    # Accumulated decisions/learnings propagated up from tasks.
+    # Keyed by primary tag for easy grouping.
+    decisions: Dict[str, List["DecisionEntry"]] = field(default_factory=dict)
+    learnings: Dict[str, List["DecisionEntry"]] = field(default_factory=dict)
 
 
 @dataclass

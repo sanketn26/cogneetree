@@ -15,6 +15,8 @@ from cogneetree.storage.in_memory_storage import InMemoryStorage
 from cogneetree.core.models import (
     ContextItem,
     ContextCategory,
+    DecisionEntry,
+    ImportanceTier,
     Session,
     Activity,
     Task,
@@ -25,7 +27,7 @@ from cogneetree.retrieval.hierarchical_retriever import (
     HistoryMode,
     RETRIEVAL_PRESETS,
 )
-from cogneetree.agent_memory import AgentMemory, ContextResult
+from cogneetree.agent_memory import AgentMemory, ContextResult, ConflictWarning, RecallResult
 
 __all__ = [
     # Context management
@@ -38,6 +40,8 @@ __all__ = [
     # Data models
     "ContextItem",
     "ContextCategory",
+    "DecisionEntry",
+    "ImportanceTier",
     "Session",
     "Activity",
     "Task",
@@ -49,4 +53,6 @@ __all__ = [
     # Agent interface (recommended for agents)
     "AgentMemory",
     "ContextResult",
+    "ConflictWarning",
+    "RecallResult",
 ]

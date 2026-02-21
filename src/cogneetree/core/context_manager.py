@@ -5,7 +5,7 @@ from cogneetree.core.interfaces import ContextStorageABC, EmbeddingModelABC
 from cogneetree.storage.in_memory_storage import InMemoryStorage
 from cogneetree.retrieval.retrieval_strategies import Retriever
 from cogneetree.config import Config
-from cogneetree.core.models import ContextCategory
+from cogneetree.core.models import Activity, ContextCategory, DecisionEntry, ImportanceTier, Session
 
 
 class ContextManager:
@@ -83,29 +83,80 @@ class ContextManager:
 
     # ==================== Record Context ====================
 
-    def record_action(self, content: str, tags: List[str]):
+    def record_action(
+        self, content: str, tags: List[str], tier: ImportanceTier = ImportanceTier.MINOR
+    ):
         """Record action under current task."""
         task = self.storage.get_current_task()
         parent_id = task.task_id if task else None
-        return self.storage.add_item(content, ContextCategory.ACTION, tags, parent_id=parent_id)
+        return self.storage.add_item(content, ContextCategory.ACTION, tags, parent_id=parent_id, tier=tier)
 
-    def record_decision(self, content: str, tags: List[str]):
-        """Record decision under current task."""
+    def record_decision(
+        self,
+        content: str,
+        tags: List[str],
+        promote: bool = False,
+        tier: ImportanceTier = ImportanceTier.MINOR,
+    ):
+        """Record decision under current task, then cascade upward if relevant.
+
+        Args:
+            content: The decision text.
+            tags: Tags describing the topic.
+            promote: When True, propagate to Activity and Session regardless of
+                     relevance score (manual override).
+            tier: Importance tier that influences retrieval scoring.
+        """
         task = self.storage.get_current_task()
         parent_id = task.task_id if task else None
-        return self.storage.add_item(content, ContextCategory.DECISION, tags, parent_id=parent_id)
+        item = self.storage.add_item(content, ContextCategory.DECISION, tags, parent_id=parent_id, tier=tier)
 
-    def record_learning(self, content: str, tags: List[str]):
-        """Record learning under current task."""
+        activity = self.storage.get_current_activity()
+        if activity and (promote or self._is_relevant(tags, activity.tags, activity.description)):
+            self._propagate_to_activity(content, tags, activity, "decisions")
+
+        session = self.storage.get_current_session()
+        if session and (promote or self._is_relevant(tags, [], session.original_ask)):
+            self._propagate_to_session(content, tags, session, "decisions")
+
+        return item
+
+    def record_learning(
+        self,
+        content: str,
+        tags: List[str],
+        promote: bool = False,
+        tier: ImportanceTier = ImportanceTier.MINOR,
+    ):
+        """Record learning under current task, then cascade upward if relevant.
+
+        Args:
+            content: The learning text.
+            tags: Tags describing the topic.
+            promote: When True, propagate regardless of relevance score.
+            tier: Importance tier that influences retrieval scoring.
+        """
         task = self.storage.get_current_task()
         parent_id = task.task_id if task else None
-        return self.storage.add_item(content, ContextCategory.LEARNING, tags, parent_id=parent_id)
+        item = self.storage.add_item(content, ContextCategory.LEARNING, tags, parent_id=parent_id, tier=tier)
 
-    def record_result(self, content: str, tags: List[str]):
+        activity = self.storage.get_current_activity()
+        if activity and (promote or self._is_relevant(tags, activity.tags, activity.description)):
+            self._propagate_to_activity(content, tags, activity, "learnings")
+
+        session = self.storage.get_current_session()
+        if session and (promote or self._is_relevant(tags, [], session.original_ask)):
+            self._propagate_to_session(content, tags, session, "learnings")
+
+        return item
+
+    def record_result(
+        self, content: str, tags: List[str], tier: ImportanceTier = ImportanceTier.MINOR
+    ):
         """Record result under current task."""
         task = self.storage.get_current_task()
         parent_id = task.task_id if task else None
-        return self.storage.add_item(content, ContextCategory.RESULT, tags, parent_id=parent_id)
+        return self.storage.add_item(content, ContextCategory.RESULT, tags, parent_id=parent_id, tier=tier)
 
     # ==================== Retrieve ====================
 
@@ -164,4 +215,74 @@ class ContextManager:
     def clear(self):
         """Clear all storage."""
         self.storage.clear()
+
+    # ==================== Propagation Helpers ====================
+
+    def _is_relevant(
+        self, item_tags: List[str], context_tags: List[str], context_description: str
+    ) -> bool:
+        """Return True if the item is relevant enough to propagate to the given context.
+
+        Relevance is determined by tag overlap first (most reliable signal), then
+        by whether any item tag appears as a substring in the context description.
+        Both checks are tag-based, requiring no external dependencies.
+        """
+        if not item_tags:
+            return False
+
+        item_tag_set = {t.lower() for t in item_tags}
+        ctx_tag_set = {t.lower() for t in context_tags}
+
+        # Direct tag match between item and context
+        if item_tag_set & ctx_tag_set:
+            return True
+
+        # Any item tag appears as a word in the context description
+        desc_lower = context_description.lower()
+        return any(tag in desc_lower for tag in item_tag_set)
+
+    @staticmethod
+    def _word_overlap(a: str, b: str) -> float:
+        """Jaccard similarity on lowercased word sets."""
+        words_a = set(a.lower().split())
+        words_b = set(b.lower().split())
+        if not words_a or not words_b:
+            return 0.0
+        return len(words_a & words_b) / len(words_a | words_b)
+
+    def _propagate_to_activity(
+        self, content: str, tags: List[str], activity: Activity, bucket: str
+    ) -> None:
+        """Propagate a decision/learning into the activity's accumulated entries.
+
+        ``bucket`` is either ``"decisions"`` or ``"learnings"``.
+        Deduplication: if a very similar entry already exists (word overlap > 0.8),
+        increment its count instead of adding a duplicate.
+        """
+        primary_tag = tags[0] if tags else "general"
+        entries: List[DecisionEntry] = getattr(activity, bucket).setdefault(primary_tag, [])
+
+        for entry in entries:
+            if self._word_overlap(content, entry.content) > 0.8:
+                entry.count += 1
+                return
+
+        entries.append(DecisionEntry(content=content))
+
+    def _propagate_to_session(
+        self, content: str, tags: List[str], session: Session, bucket: str
+    ) -> None:
+        """Propagate a decision/learning into the session's accumulated entries.
+
+        Same deduplication logic as ``_propagate_to_activity``.
+        """
+        primary_tag = tags[0] if tags else "general"
+        entries: List[DecisionEntry] = getattr(session, bucket).setdefault(primary_tag, [])
+
+        for entry in entries:
+            if self._word_overlap(content, entry.content) > 0.8:
+                entry.count += 1
+                return
+
+        entries.append(DecisionEntry(content=content))
 

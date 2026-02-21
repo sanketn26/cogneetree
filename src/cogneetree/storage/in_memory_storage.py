@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Optional, Any
 from cogneetree.core.interfaces import ContextStorageABC
-from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory
+from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory, ImportanceTier
 
 
 class InMemoryStorage(ContextStorageABC):
@@ -62,10 +62,16 @@ class InMemoryStorage(ContextStorageABC):
         tags: List[str],
         parent_id: Optional[str] = None,
         embedding: Optional[Any] = None,
+        tier: Optional[ImportanceTier] = None,
     ) -> ContextItem:
         """Add context item."""
         item = ContextItem(
-            content, category, tags, parent_id=parent_id, embedding=embedding
+            content,
+            category,
+            tags,
+            parent_id=parent_id,
+            embedding=embedding,
+            tier=tier or ImportanceTier.MINOR,
         )
         self.items.append(item)
         return item

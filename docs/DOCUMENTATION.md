@@ -43,6 +43,9 @@ You'll learn:
 | "How do I add custom storage?" | CLAUDE | Storage Backend |
 | "How do I run tests?" | CLAUDE | Development Commands |
 | "Why design it this way?" | CLAUDE | Design Decisions |
+| "What's the competitive landscape?" | STRATEGY | Competitive Landscape |
+| "What should we build next?" | STRATEGY | The 7 Strategic Priorities |
+| "What's the implementation order?" | STRATEGY | Implementation Order |
 
 ## Document Map
 
@@ -57,6 +60,8 @@ README.md (Entry Point)
 │     ├─ Design Decisions
 │     ├─ Best Practices
 │     └─ Development Guide
+├─ Product/Strategy
+│  └─ STRATEGY.md (Competitive Positioning & Roadmap TODOs)
 └─ Contributes Back?
    └─ CLAUDE.md (for extending)
 ```

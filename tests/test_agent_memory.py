@@ -312,3 +312,62 @@ Based on our history, what's the best approach?"""
         # Should have context if items were found
         if context_block:
             assert "Past Decision" in prompt or "Relevant" in prompt
+
+
+class TestTokenAwareContextBuilding:
+    """Phase 0.1: Token-aware context building."""
+
+    def test_estimate_tokens_returns_int(self, memory_setup):
+        """_estimate_tokens returns a positive integer for any ContextResult."""
+        memory = AgentMemory(memory_setup, current_task_id="t3")
+        results = memory.recall("JWT")
+        if results:
+            estimate = AgentMemory._estimate_tokens(results[0])
+            assert isinstance(estimate, int)
+            assert estimate > 0
+
+    def test_estimate_tokens_overhead_plus_content(self):
+        """Token estimate = 30 overhead + len(content)//4."""
+        result = ContextResult(
+            content="A" * 100,  # 100 chars → 25 content tokens
+            category="decision",
+            source="Test",
+            confidence=1.0,
+        )
+        assert AgentMemory._estimate_tokens(result) == 30 + 25  # overhead + content
+
+    def test_build_context_no_budget_uses_max_items(self, memory_setup):
+        """Without max_tokens, build_context respects max_items."""
+        memory = AgentMemory(memory_setup, current_task_id="t3")
+        context = memory.build_context("JWT", max_items=1)
+        # Should contain at most 1 "Past Decision" block
+        assert context.count("### Past Decision") <= 1
+
+    def test_build_context_respects_max_tokens(self, memory_setup):
+        """With max_tokens set, items are cut off when budget is exceeded."""
+        memory = AgentMemory(memory_setup, current_task_id="t3")
+
+        # Tiny budget: each item costs at least 30 tokens overhead, so budget=1
+        # should yield an empty context (no item fits)
+        context_tight = memory.build_context("JWT", max_tokens=1)
+        assert context_tight == ""
+
+        # Generous budget: should include at least one item
+        context_generous = memory.build_context("JWT", max_tokens=2000)
+        # If there are matching items they should appear; if none matched it's still ""
+        # Just verify it doesn't crash and returns a string
+        assert isinstance(context_generous, str)
+
+    def test_build_context_token_budget_limits_items(self, memory_setup):
+        """Token budget stops adding items once exceeded, even if max_items allows more."""
+        memory = AgentMemory(memory_setup, current_task_id="t3")
+        results = memory.recall("JWT")
+        if len(results) < 2:
+            pytest.skip("Need at least 2 results to test budget limiting")
+
+        # Calculate cost of exactly the first item
+        first_item_cost = AgentMemory._estimate_tokens(results[0])
+
+        # Budget just enough for 1 item: second item should be excluded
+        context = memory.build_context("JWT", max_tokens=first_item_cost, max_items=5)
+        assert context.count("### Past Decision") <= 1

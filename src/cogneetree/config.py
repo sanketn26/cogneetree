@@ -20,6 +20,9 @@ class Config:
     # Storage settings (use ContextManager.with_storage() for custom backends)
     storage_path: Optional[str] = None  # Optional: file path for future storage backends
 
+    # Cascading propagation settings
+    propagation_threshold: float = 0.3  # Minimum relevance score for a decision/learning to propagate
+
     @classmethod
     def default(cls) -> "Config":
         """Get default config."""
@@ -40,4 +43,5 @@ class Config:
             embedding_model=data.get("embedding_model", "microsoft/codebert-base"),
             openai_api_key=data.get("openai_api_key"),
             storage_path=data.get("storage_path"),
+            propagation_threshold=data.get("propagation_threshold", 0.3),
         )
