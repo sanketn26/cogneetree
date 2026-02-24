@@ -1,11 +1,15 @@
 """Embedding models for semantic retrieval."""
 
 from typing import Any, Union, Optional
-import numpy as np
 import logging
 from cogneetree.core.interfaces import EmbeddingModelABC
 
 logger = logging.getLogger(__name__)
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - optional dependency
+    np = None
 
 
 class SentenceTransformerModel(EmbeddingModelABC):
@@ -30,13 +34,30 @@ class SentenceTransformerModel(EmbeddingModelABC):
     def encode(self, text: str) -> Any:
         """Get embedding for text."""
         if not text or not text.strip():
-            return np.zeros(768)
+            if np is not None:
+                return np.zeros(768)
+            return [0.0] * 768
         if self.model:
             return self.model.encode(text, convert_to_tensor=False)
-        return np.zeros(768)
+        if np is not None:
+            return np.zeros(768)
+        return [0.0] * 768
 
     def similarity(self, emb1: Any, emb2: Any) -> float:
         """Cosine similarity between two embeddings."""
+        if np is None:
+            # Fallback cosine similarity without numpy.
+            v1 = [float(x) for x in emb1]
+            v2 = [float(x) for x in emb2]
+            if not v1 or not v2 or len(v1) != len(v2):
+                return 0.0
+            dot = sum(a * b for a, b in zip(v1, v2))
+            norm1 = sum(a * a for a in v1) ** 0.5
+            norm2 = sum(b * b for b in v2) ** 0.5
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+            return float(dot / (norm1 * norm2))
+
         emb1 = np.array(emb1) if not isinstance(emb1, np.ndarray) else emb1
         emb2 = np.array(emb2) if not isinstance(emb2, np.ndarray) else emb2
         norm1 = np.linalg.norm(emb1)
