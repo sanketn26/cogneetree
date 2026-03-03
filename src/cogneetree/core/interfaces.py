@@ -29,7 +29,7 @@ EXAMPLE:
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional, Any
-from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory
+from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory, ImportanceTier
 
 
 class EmbeddingModelABC(ABC):
@@ -170,4 +170,116 @@ class ContextStorageABC(ABC):
     @abstractmethod
     def clear(self) -> None:
         """Clear all stored data."""
+        pass
+
+
+class AsyncContextStorageABC(ABC):
+    """
+    Async variant of ContextStorageABC for backends built on async drivers (e.g. asyncpg).
+
+    Identical contract to ContextStorageABC but all methods are coroutines.
+    Implementations MUST maintain current_session_id, current_activity_id,
+    current_task_id as instance attributes.
+    """
+
+    @abstractmethod
+    async def create_session(self, session_id: str, original_ask: str, high_level_plan: str) -> Session:
+        pass
+
+    @abstractmethod
+    async def create_activity(
+        self,
+        activity_id: str,
+        session_id: str,
+        description: str,
+        tags: List[str],
+        mode: str,
+        component: str,
+        planner_analysis: str,
+    ) -> Activity:
+        pass
+
+    @abstractmethod
+    async def create_task(self, task_id: str, activity_id: str, description: str, tags: List[str]) -> Task:
+        pass
+
+    @abstractmethod
+    async def complete_task(self, task_id: str, result: str) -> None:
+        pass
+
+    @abstractmethod
+    async def add_item(
+        self,
+        content: str,
+        category: ContextCategory,
+        tags: List[str],
+        parent_id: Optional[str] = None,
+        embedding: Optional[Any] = None,
+        tier: Optional["ImportanceTier"] = None,
+    ) -> ContextItem:
+        pass
+
+    @abstractmethod
+    async def get_session(self, session_id: str) -> Optional[Session]:
+        pass
+
+    @abstractmethod
+    async def get_activity(self, activity_id: str) -> Optional[Activity]:
+        pass
+
+    @abstractmethod
+    async def get_task(self, task_id: str) -> Optional[Task]:
+        pass
+
+    @abstractmethod
+    async def get_current_session(self) -> Optional[Session]:
+        pass
+
+    @abstractmethod
+    async def get_current_activity(self) -> Optional[Activity]:
+        pass
+
+    @abstractmethod
+    async def get_current_task(self) -> Optional[Task]:
+        pass
+
+    @abstractmethod
+    async def get_items_by_tags(self, tags: List[str]) -> List[ContextItem]:
+        pass
+
+    @abstractmethod
+    async def get_items_by_category(self, category: ContextCategory) -> List[ContextItem]:
+        pass
+
+    @abstractmethod
+    async def get_stats(self) -> Dict[str, int]:
+        pass
+
+    @abstractmethod
+    async def get_items_by_task(self, task_id: str) -> List[ContextItem]:
+        pass
+
+    @abstractmethod
+    async def get_items_by_activity(self, activity_id: str) -> List[ContextItem]:
+        pass
+
+    @abstractmethod
+    async def get_items_by_session(self, session_id: str) -> List[ContextItem]:
+        pass
+
+    @abstractmethod
+    async def get_all_sessions(self) -> List[Session]:
+        pass
+
+    @abstractmethod
+    async def get_activity_tasks(self, activity_id: str) -> List[Task]:
+        pass
+
+    @abstractmethod
+    async def clear(self) -> None:
+        pass
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Release connection pool or other async resources."""
         pass

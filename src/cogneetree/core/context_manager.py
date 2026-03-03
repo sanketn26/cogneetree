@@ -165,7 +165,8 @@ class ContextManager:
     ) -> List[Dict[str, Any]]:
         """Retrieve relevant context."""
         max_results = max_results or self.config.max_results
-        return self.retriever.retrieve(query_tags, query_description, max_results)
+        results = self.retriever.retrieve(query_tags, query_description, max_results)
+        return [r for r in results if r.get("score", 0.0) >= self.config.min_score]
 
     # ==================== Build Prompt ====================
 
@@ -227,19 +228,30 @@ class ContextManager:
         by whether any item tag appears as a substring in the context description.
         Both checks are tag-based, requiring no external dependencies.
         """
+        return (
+            self._relevance_score(item_tags, context_tags, context_description)
+            >= self.config.propagation_threshold
+        )
+
+    def _relevance_score(
+        self, item_tags: List[str], context_tags: List[str], context_description: str
+    ) -> float:
+        """Simple relevance score in [0,1] for propagation gating."""
         if not item_tags:
-            return False
+            return 0.0
 
         item_tag_set = {t.lower() for t in item_tags}
         ctx_tag_set = {t.lower() for t in context_tags}
 
-        # Direct tag match between item and context
-        if item_tag_set & ctx_tag_set:
-            return True
+        tag_overlap = 0.0
+        if item_tag_set and ctx_tag_set:
+            tag_overlap = len(item_tag_set & ctx_tag_set) / max(len(item_tag_set), 1)
 
-        # Any item tag appears as a word in the context description
         desc_lower = context_description.lower()
-        return any(tag in desc_lower for tag in item_tag_set)
+        desc_hits = sum(1 for tag in item_tag_set if tag in desc_lower)
+        desc_overlap = desc_hits / max(len(item_tag_set), 1)
+
+        return max(tag_overlap, desc_overlap)
 
     @staticmethod
     def _word_overlap(a: str, b: str) -> float:
@@ -285,4 +297,3 @@ class ContextManager:
                 return
 
         entries.append(DecisionEntry(content=content))
-

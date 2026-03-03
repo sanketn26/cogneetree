@@ -1,7 +1,7 @@
 """Hierarchical retriever with user control over historical context."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Optional, Any
 from enum import Enum
 
@@ -130,12 +130,39 @@ class HierarchicalRetriever:
             )
 
         # Score candidates
-        scored = self._score_candidates(candidates, query, config)
+        deduped_candidates = self._dedupe_candidates(candidates)
+        scored = self._score_candidates(deduped_candidates, query, config)
 
         # Sort by final score
         scored.sort(key=lambda x: x["final_score"], reverse=True)
 
         return scored[:max_results]
+
+    def _dedupe_candidates(
+        self, candidates: List[tuple[ContextItem, str, str, float]]
+    ) -> List[tuple[ContextItem, str, str, float]]:
+        """Remove exact duplicate candidate tuples.
+
+        Uses id(item) as the identity key, which works correctly because
+        candidates are assembled from already-loaded ContextItem instances
+        (same Python object, same memory address). This would silently fail
+        to deduplicate if a storage backend deserializes the same item into
+        two separate objects — avoid that pattern in storage implementations.
+        """
+        seen = set()
+        unique = []
+        for item, source_session_id, source_location, proximity_weight in candidates:
+            key = (
+                id(item),
+                source_session_id,
+                source_location,
+                proximity_weight,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((item, source_session_id, source_location, proximity_weight))
+        return unique
 
     def _gather_current_only(
         self, task, activity, session, config: RetrievalConfig
@@ -342,10 +369,12 @@ class HierarchicalRetriever:
     ) -> List[Dict[str, Any]]:
         """Score candidates by semantic similarity × proximity weight × tier multiplier."""
         scored = []
+        query_words = {w for w in query.lower().split() if w}
 
         for item, source_session_id, source_location, proximity_weight in candidates:
             # Semantic score
             semantic_score = 0.0
+            used_semantic = False
             if config.use_semantic and self.embedding_model:
                 try:
                     query_emb = self.embedding_model.encode(query)
@@ -360,8 +389,18 @@ class HierarchicalRetriever:
                             np.dot(query_emb, item_emb) / (norm1 * norm2)
                         )
                         semantic_score = max(0.0, min(1.0, (similarity + 1) / 2))
+                        used_semantic = True
                 except Exception:
                     pass
+
+            # Lexical fallback only when semantic scoring was not invoked
+            # (disabled or no embedding model). Avoids overriding a legitimate 0.0
+            # cosine similarity score from an active embedding model.
+            if not used_semantic:
+                item_words = set(item.content.lower().split())
+                item_words.update(tag.lower() for tag in getattr(item, "tags", []))
+                if query_words and item_words:
+                    semantic_score = len(query_words & item_words) / len(query_words)
 
             # Importance tier multiplier
             tier_multiplier = self._TIER_MULTIPLIERS.get(

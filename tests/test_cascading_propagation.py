@@ -199,6 +199,39 @@ class TestPromoteFlag:
         # With threshold=0.3 and very low word overlap, should NOT propagate
         assert "db" not in activity.decisions or activity.decisions.get("db", []) == []
 
+    def test_partial_tag_overlap_below_threshold_does_not_propagate(self):
+        """A single matching tag out of many does not meet the 0.3 threshold."""
+        manager = ContextManager(Config.default())
+        manager.create_session("s1", "Build auth system", "OAuth2 based")
+        manager.create_activity(
+            "a1", "s1", "Token handling", ["jwt", "oauth", "signing", "expiry"],
+            "coder", "auth", "analysis"
+        )
+        manager.create_task("t1", "a1", "Implement token refresh", ["jwt", "oauth", "signing", "expiry"])
+
+        # Item has 4 tags, only 1 ("db") matches nothing in the activity — score ≈ 0.0
+        # Even with 1 matching tag out of 4 item tags → 0.25, below default threshold 0.3
+        manager.record_decision("Use Redis for session caching", ["db", "cache", "redis", "perf"])
+
+        activity = manager.storage.get_current_activity()
+        assert "db" not in activity.decisions or activity.decisions.get("db", []) == []
+
+    def test_sufficient_tag_overlap_propagates(self):
+        """Tag overlap at or above the 0.3 threshold propagates normally."""
+        manager = ContextManager(Config.default())
+        manager.create_session("s1", "Build auth system", "JWT based")
+        manager.create_activity(
+            "a1", "s1", "Token handling", ["jwt", "signing"],
+            "coder", "auth", "analysis"
+        )
+        manager.create_task("t1", "a1", "Implement token signing", ["jwt", "signing"])
+
+        # 2 of 2 item tags match activity tags → overlap = 1.0, above threshold
+        manager.record_decision("Use RS256 for signing", ["jwt", "signing"])
+
+        activity = manager.storage.get_current_activity()
+        assert "jwt" in activity.decisions
+
 
 # ---------------------------------------------------------------------------
 # Word overlap helper

@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 from cogneetree.core.interfaces import ContextStorageABC
-from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory
+from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory, ImportanceTier
 
 try:
     import redis
@@ -77,15 +77,24 @@ class RedisStorage(ContextStorageABC):
         if self.client.exists(key):
             self.client.hset(key, "result", result)
 
-    def add_item(self, content: str, category: ContextCategory, tags: List[str], parent_id: Optional[str] = None, embedding: Optional[Any] = None) -> ContextItem:
-        item = ContextItem(content, category, tags, parent_id=parent_id)
+    def add_item(
+        self,
+        content: str,
+        category: ContextCategory,
+        tags: List[str],
+        parent_id: Optional[str] = None,
+        embedding: Optional[Any] = None,
+        tier: Optional[Any] = None,
+    ) -> ContextItem:
+        normalized_tier = tier or ImportanceTier.MINOR
+        item = ContextItem(content, category, tags, parent_id=parent_id, tier=normalized_tier)
         item_data = {
             "content": content,
             "category": category.value,
             "tags": json.dumps(tags),
             "parent_id": parent_id or "",
             "timestamp": item.timestamp.isoformat(),
-            "metadata": json.dumps(item.metadata)
+            "metadata": json.dumps({**item.metadata, "tier": normalized_tier.value})
         }
         # Use a list for items, or incrementing ID. 
         # For simplicity, using a global list + hash might be better, but list is OK for simple logs
@@ -140,25 +149,110 @@ class RedisStorage(ContextStorageABC):
         tid = self.client.get(self.current_task_key)
         return self.get_task(tid) if tid else None
 
+    def _hash_to_item(self, data: dict) -> ContextItem:
+        """Deserialize a Redis hash dict into a ContextItem."""
+        metadata = json.loads(data["metadata"]) if data.get("metadata") else {}
+        return ContextItem(
+            content=data["content"],
+            category=ContextCategory(data["category"]),
+            tags=json.loads(data["tags"]),
+            parent_id=data["parent_id"] or None,
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            metadata=metadata,
+            tier=ImportanceTier(metadata.get("tier", ImportanceTier.MINOR.value)),
+        )
+
     def get_items_by_tags(self, tags: List[str]) -> List[ContextItem]:
         item_keys = set()
         for tag in tags:
             keys = self.client.smembers(f"{self.prefix}tag:{tag}")
             item_keys.update(keys)
-        
+
         results = []
         for key in item_keys:
             data = self.client.hgetall(key)
             if data:
-                results.append(ContextItem(
-                    content=data["content"],
-                    category=ContextCategory(data["category"]),
-                    tags=json.loads(data["tags"]),
-                    parent_id=data["parent_id"] or None,
-                    timestamp=datetime.fromisoformat(data["timestamp"]),
-                    metadata=json.loads(data["metadata"])
-                ))
+                results.append(self._hash_to_item(data))
         return results
+
+    def get_items_by_category(self, category: ContextCategory) -> List[ContextItem]:
+        return [item for item in self._get_all_items() if item.category == category]
+
+    def get_stats(self) -> Dict[str, int]:
+        sessions = len(self.client.keys(self._key("session", "*")))
+        activities = len(self.client.keys(self._key("activity", "*")))
+        tasks = len(self.client.keys(self._key("task", "*")))
+        items = len(self.client.keys(self._key("item", "*")))
+        return {
+            "sessions": sessions,
+            "activities": activities,
+            "tasks": tasks,
+            "items": items,
+        }
+
+    def get_items_by_task(self, task_id: str) -> List[ContextItem]:
+        return [item for item in self._get_all_items() if item.parent_id == task_id]
+
+    def get_items_by_activity(self, activity_id: str) -> List[ContextItem]:
+        task_ids = {
+            task.task_id
+            for task in self.get_activity_tasks(activity_id)
+        }
+        return [item for item in self._get_all_items() if item.parent_id in task_ids]
+
+    def get_items_by_session(self, session_id: str) -> List[ContextItem]:
+        activity_ids = set()
+        for key in self.client.keys(self._key("activity", "*")):
+            data = self.client.hgetall(key)
+            if data and data.get("session_id") == session_id:
+                activity_ids.add(data["activity_id"])
+
+        task_ids = set()
+        for key in self.client.keys(self._key("task", "*")):
+            data = self.client.hgetall(key)
+            if data and data.get("activity_id") in activity_ids:
+                task_ids.add(data["task_id"])
+
+        return [item for item in self._get_all_items() if item.parent_id in task_ids]
+
+    def get_all_sessions(self) -> List[Session]:
+        sessions = []
+        for key in self.client.keys(self._key("session", "*")):
+            data = self.client.hgetall(key)
+            if data:
+                sessions.append(
+                    Session(
+                        data["session_id"],
+                        data["original_ask"],
+                        data["high_level_plan"],
+                        created_at=datetime.fromisoformat(data["created_at"]),
+                    )
+                )
+        return sorted(sessions, key=lambda s: s.created_at)
+
+    def get_activity_tasks(self, activity_id: str) -> List[Task]:
+        tasks = []
+        for key in self.client.keys(self._key("task", "*")):
+            data = self.client.hgetall(key)
+            if data and data.get("activity_id") == activity_id:
+                tasks.append(
+                    Task(
+                        data["task_id"],
+                        data["activity_id"],
+                        data["description"],
+                        json.loads(data["tags"]),
+                        result=data.get("result") or None,
+                    )
+                )
+        return tasks
+
+    def _get_all_items(self) -> List[ContextItem]:
+        items = []
+        for key in self.client.keys(self._key("item", "*")):
+            data = self.client.hgetall(key)
+            if data:
+                items.append(self._hash_to_item(data))
+        return items
 
     def clear(self) -> None:
         keys = self.client.keys(f"{self.prefix}*")

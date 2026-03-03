@@ -6,7 +6,7 @@ import logging
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
 from cogneetree.core.interfaces import ContextStorageABC
-from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory
+from cogneetree.core.models import Session, Activity, Task, ContextItem, ContextCategory, ImportanceTier
 
 try:
     import psycopg2
@@ -80,13 +80,40 @@ class SQLiteStorage(ContextStorageABC):
         with self.conn:
             self.conn.execute("UPDATE tasks SET result = ? WHERE task_id = ?", (result, task_id))
 
-    def add_item(self, content: str, category: ContextCategory, tags: List[str], parent_id: Optional[str] = None, embedding: Optional[Any] = None) -> ContextItem:
+    def add_item(
+        self,
+        content: str,
+        category: ContextCategory,
+        tags: List[str],
+        parent_id: Optional[str] = None,
+        embedding: Optional[Any] = None,
+        tier: Optional[Any] = None,
+    ) -> ContextItem:
+        metadata = {"tier": (tier or ImportanceTier.MINOR).value}
         with self.conn:
             self.conn.execute(
                 "INSERT INTO context_items (content, category, tags, parent_id, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?)",
-                (content, category.value, json.dumps(tags), parent_id, datetime.now().isoformat(), json.dumps({}))
+                (content, category.value, json.dumps(tags), parent_id, datetime.now().isoformat(), json.dumps(metadata))
             )
-        return ContextItem(content, category, tags, parent_id=parent_id)
+        return ContextItem(content, category, tags, parent_id=parent_id, metadata=metadata, tier=tier or ImportanceTier.MINOR)
+
+    @staticmethod
+    def _row_to_item(row: Tuple[Any, ...]) -> ContextItem:
+        metadata = json.loads(row[6]) if row[6] else {}
+        tier_value = metadata.get("tier", ImportanceTier.MINOR.value)
+        try:
+            tier = ImportanceTier(tier_value)
+        except ValueError:
+            tier = ImportanceTier.MINOR
+        return ContextItem(
+            content=row[1],
+            category=ContextCategory(row[2]),
+            tags=json.loads(row[3]),
+            parent_id=row[4],
+            timestamp=datetime.fromisoformat(row[5]),
+            metadata=metadata,
+            tier=tier,
+        )
 
     def get_session(self, session_id: str) -> Optional[Session]:
         c = self.conn.cursor()
@@ -137,20 +164,70 @@ class SQLiteStorage(ContextStorageABC):
         c = self.conn.cursor()
         c.execute("SELECT * FROM context_items")
         rows = c.fetchall()
-        
-        results = []
-        for r in rows:
-            item_tags = json.loads(r[3])
-            if any(t in item_tags for t in tags):
-                results.append(ContextItem(
-                    content=r[1],
-                    category=ContextCategory(r[2]),
-                    tags=item_tags,
-                    parent_id=r[4],
-                    timestamp=datetime.fromisoformat(r[5]),
-                    metadata=json.loads(r[6])
-                ))
-        return results
+        return [self._row_to_item(r) for r in rows if any(t in json.loads(r[3]) for t in tags)]
+
+    def get_items_by_category(self, category: ContextCategory) -> List[ContextItem]:
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM context_items WHERE category = ?", (category.value,))
+        return [self._row_to_item(r) for r in c.fetchall()]
+
+    def get_stats(self) -> Dict[str, int]:
+        c = self.conn.cursor()
+        counts = {}
+        for table in ("sessions", "activities", "tasks", "context_items"):
+            c.execute(f"SELECT COUNT(*) FROM {table}")
+            counts[table] = c.fetchone()[0]
+        return {
+            "sessions": counts["sessions"],
+            "activities": counts["activities"],
+            "tasks": counts["tasks"],
+            "items": counts["context_items"],
+        }
+
+    def get_items_by_task(self, task_id: str) -> List[ContextItem]:
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM context_items WHERE parent_id = ?", (task_id,))
+        return [self._row_to_item(r) for r in c.fetchall()]
+
+    def get_items_by_activity(self, activity_id: str) -> List[ContextItem]:
+        c = self.conn.cursor()
+        c.execute("SELECT task_id FROM tasks WHERE activity_id = ?", (activity_id,))
+        task_ids = [r[0] for r in c.fetchall()]
+        if not task_ids:
+            return []
+        placeholders = ",".join("?" for _ in task_ids)
+        c.execute(f"SELECT * FROM context_items WHERE parent_id IN ({placeholders})", task_ids)
+        return [self._row_to_item(r) for r in c.fetchall()]
+
+    def get_items_by_session(self, session_id: str) -> List[ContextItem]:
+        c = self.conn.cursor()
+        c.execute("SELECT activity_id FROM activities WHERE session_id = ?", (session_id,))
+        activity_ids = [r[0] for r in c.fetchall()]
+        if not activity_ids:
+            return []
+        placeholders = ",".join("?" for _ in activity_ids)
+        c.execute(f"SELECT task_id FROM tasks WHERE activity_id IN ({placeholders})", activity_ids)
+        task_ids = [r[0] for r in c.fetchall()]
+        if not task_ids:
+            return []
+        placeholders = ",".join("?" for _ in task_ids)
+        c.execute(f"SELECT * FROM context_items WHERE parent_id IN ({placeholders})", task_ids)
+        return [self._row_to_item(r) for r in c.fetchall()]
+
+    def get_all_sessions(self) -> List[Session]:
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM sessions ORDER BY created_at")
+        return [Session(r[0], r[1], r[2], datetime.fromisoformat(r[3])) for r in c.fetchall()]
+
+    @staticmethod
+    def _row_to_task(row: Tuple[Any, ...]) -> Task:
+        # Schema: task_id, activity_id, description, tags (JSON), result
+        return Task(row[0], row[1], row[2], json.loads(row[3]), row[4])
+
+    def get_activity_tasks(self, activity_id: str) -> List[Task]:
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM tasks WHERE activity_id = ?", (activity_id,))
+        return [self._row_to_task(r) for r in c.fetchall()]
 
     def clear(self) -> None:
         with self.conn:
@@ -234,13 +311,22 @@ class PostgresStorage(ContextStorageABC):
         with self.conn.cursor() as c:
             c.execute("UPDATE tasks SET result = %s WHERE task_id = %s", (result, task_id))
 
-    def add_item(self, content: str, category: ContextCategory, tags: List[str], parent_id: Optional[str] = None, embedding: Optional[Any] = None) -> ContextItem:
+    def add_item(
+        self,
+        content: str,
+        category: ContextCategory,
+        tags: List[str],
+        parent_id: Optional[str] = None,
+        embedding: Optional[Any] = None,
+        tier: Optional[Any] = None,
+    ) -> ContextItem:
+        metadata = {"tier": (tier or ImportanceTier.MINOR).value}
         with self.conn.cursor() as c:
             c.execute(
                 "INSERT INTO context_items (content, category, tags, parent_id, timestamp, metadata) VALUES (%s, %s, %s, %s, %s, %s)",
-                (content, category.value, json.dumps(tags), parent_id, datetime.now(), json.dumps({}))
+                (content, category.value, json.dumps(tags), parent_id, datetime.now(), json.dumps(metadata))
             )
-        return ContextItem(content, category, tags, parent_id=parent_id)
+        return ContextItem(content, category, tags, parent_id=parent_id, metadata=metadata, tier=tier or ImportanceTier.MINOR)
 
     def get_session(self, session_id: str) -> Optional[Session]:
         with self.conn.cursor(cursor_factory=DictCursor) as c:
@@ -289,8 +375,87 @@ class PostgresStorage(ContextStorageABC):
             rows = c.fetchall()
             return [ContextItem(
                 r['content'], ContextCategory(r['category']), r['tags'], 
-                r['parent_id'], r['timestamp'], r['metadata']
+                r['parent_id'], r['timestamp'], r['metadata'],
+                tier=ImportanceTier(r.get("metadata", {}).get("tier", ImportanceTier.MINOR.value))
             ) for r in rows]
+
+    def get_items_by_category(self, category: ContextCategory) -> List[ContextItem]:
+        with self.conn.cursor(cursor_factory=DictCursor) as c:
+            c.execute("SELECT * FROM context_items WHERE category = %s", (category.value,))
+            rows = c.fetchall()
+            return [ContextItem(
+                r['content'], ContextCategory(r['category']), r['tags'],
+                r['parent_id'], r['timestamp'], r['metadata'],
+                tier=ImportanceTier(r.get("metadata", {}).get("tier", ImportanceTier.MINOR.value))
+            ) for r in rows]
+
+    def get_stats(self) -> Dict[str, int]:
+        with self.conn.cursor() as c:
+            c.execute("SELECT COUNT(*) FROM sessions")
+            sessions = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM activities")
+            activities = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM tasks")
+            tasks = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM context_items")
+            items = c.fetchone()[0]
+        return {"sessions": sessions, "activities": activities, "tasks": tasks, "items": items}
+
+    def get_items_by_task(self, task_id: str) -> List[ContextItem]:
+        with self.conn.cursor(cursor_factory=DictCursor) as c:
+            c.execute("SELECT * FROM context_items WHERE parent_id = %s", (task_id,))
+            rows = c.fetchall()
+            return [ContextItem(
+                r['content'], ContextCategory(r['category']), r['tags'],
+                r['parent_id'], r['timestamp'], r['metadata'],
+                tier=ImportanceTier(r.get("metadata", {}).get("tier", ImportanceTier.MINOR.value))
+            ) for r in rows]
+
+    def get_items_by_activity(self, activity_id: str) -> List[ContextItem]:
+        with self.conn.cursor() as c:
+            c.execute("SELECT task_id FROM tasks WHERE activity_id = %s", (activity_id,))
+            task_ids = [r[0] for r in c.fetchall()]
+        if not task_ids:
+            return []
+        with self.conn.cursor(cursor_factory=DictCursor) as c:
+            c.execute("SELECT * FROM context_items WHERE parent_id = ANY(%s)", (task_ids,))
+            rows = c.fetchall()
+            return [ContextItem(
+                r['content'], ContextCategory(r['category']), r['tags'],
+                r['parent_id'], r['timestamp'], r['metadata'],
+                tier=ImportanceTier(r.get("metadata", {}).get("tier", ImportanceTier.MINOR.value))
+            ) for r in rows]
+
+    def get_items_by_session(self, session_id: str) -> List[ContextItem]:
+        with self.conn.cursor() as c:
+            c.execute("SELECT activity_id FROM activities WHERE session_id = %s", (session_id,))
+            activity_ids = [r[0] for r in c.fetchall()]
+            if not activity_ids:
+                return []
+            c.execute("SELECT task_id FROM tasks WHERE activity_id = ANY(%s)", (activity_ids,))
+            task_ids = [r[0] for r in c.fetchall()]
+        if not task_ids:
+            return []
+        with self.conn.cursor(cursor_factory=DictCursor) as c:
+            c.execute("SELECT * FROM context_items WHERE parent_id = ANY(%s)", (task_ids,))
+            rows = c.fetchall()
+            return [ContextItem(
+                r['content'], ContextCategory(r['category']), r['tags'],
+                r['parent_id'], r['timestamp'], r['metadata'],
+                tier=ImportanceTier(r.get("metadata", {}).get("tier", ImportanceTier.MINOR.value))
+            ) for r in rows]
+
+    def get_all_sessions(self) -> List[Session]:
+        with self.conn.cursor(cursor_factory=DictCursor) as c:
+            c.execute("SELECT * FROM sessions ORDER BY created_at")
+            rows = c.fetchall()
+            return [Session(r['session_id'], r['original_ask'], r['high_level_plan'], r['created_at']) for r in rows]
+
+    def get_activity_tasks(self, activity_id: str) -> List[Task]:
+        with self.conn.cursor(cursor_factory=DictCursor) as c:
+            c.execute("SELECT * FROM tasks WHERE activity_id = %s", (activity_id,))
+            rows = c.fetchall()
+            return [Task(r['task_id'], r['activity_id'], r['description'], r['tags'], r['result']) for r in rows]
 
     def clear(self) -> None:
         with self.conn.cursor() as c:
