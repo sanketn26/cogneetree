@@ -456,6 +456,322 @@ All 21 tests validate:
 - ✅ Citation formatting
 - ✅ Real agent workflows
 
+---
+
+## Permanent Memory — Implementation Plan
+
+> **Status: Not yet started.**
+>
+> | Step | File | Status |
+> |------|------|--------|
+> | 1 | `src/cogneetree/core/models.py` | ⬜ Not started |
+> | 2a | `src/cogneetree/storage/in_memory_storage.py` | ⬜ Not started |
+> | 2b | `src/cogneetree/storage/sql_storage.py` | ⬜ Not started |
+> | 2c | `src/cogneetree/storage/redis_storage.py` | ⬜ Not started |
+> | 2d | `src/cogneetree/storage/async_postgres_storage.py` | ⬜ Not started |
+> | 3 | `src/cogneetree/retrieval/hierarchical_retriever.py` | ⬜ Not started |
+> | 4 | `src/cogneetree/core/context_manager.py` | ⬜ Not started |
+> | 5 | `src/cogneetree/agent_memory.py` | ⬜ Not started |
+> | 6 | `tests/test_permanent_memory.py` + contract test | ⬜ Not started |
+>
+> **→ Start at Step 1.**
+
+### Problem
+
+All existing memory is **session-scoped**. When a new session starts, past decisions and learnings are only accessible via an explicit `recall()` query. There is no concept of knowledge that *always* surfaces — architectural rules, project-wide constraints, or hard-won learnings that every future agent should be aware of without needing to ask.
+
+Current limitation #2 in this file says:
+> *"No cross-session persistence by default — InMemoryStorage loses data when the process ends."*
+
+That addresses storage durability (solved by JsonFileStorage/Redis/SQL). Permanent memory is a separate, orthogonal problem: knowledge that transcends individual sessions and always appears in context, regardless of what the agent is querying.
+
+### Design: The Knowledge Bank
+
+The Knowledge Bank is a virtual permanent pool stored as normal `ContextItem` objects, but with a sentinel `parent_id = "__knowledge_bank__"` instead of a real task ID.
+
+**Why this sentinel approach?**
+- Zero schema changes — all existing storage backends already support arbitrary `parent_id` strings
+- `get_items_by_task("__knowledge_bank__")` retrieves all permanent items using existing infrastructure
+- `clear()` is modified to skip items with this parent_id, giving them lifetime beyond sessions
+
+**Storage layout:**
+```
+Regular session items        parent_id = "t1", "t2", ...  ← cleared with clear()
+Knowledge Bank items         parent_id = "__knowledge_bank__"  ← never cleared
+```
+
+### New Public API
+
+```python
+# 1. Directly write permanent knowledge (anytime, from any session)
+manager.record_permanent(
+    "Use RS256 for JWT signing — supports key rotation across services",
+    tags=["jwt", "signing"],
+    tier=ImportanceTier.CRITICAL,            # default
+)
+
+# 2. Finalize a session: promotes CRITICAL items + session decisions into the KB
+promoted_count = manager.finalize_session("session_auth")
+
+# 3. Query KB items directly
+kb_items = memory.knowledge_bank()           # returns all permanent items
+
+# 4. build_context() and build_prompt() automatically prepend a permanent section
+context_block = memory.build_context("How should I handle tokens?")
+# Output:
+# === PERMANENT KNOWLEDGE ===
+# [DECISION] Use RS256 for JWT signing — supports key rotation
+#
+# === RELEVANT HISTORY ===
+# ...scored results...
+```
+
+### How `finalize_session()` Works
+
+When called with a `session_id`, it promotes two classes of knowledge into the KB:
+
+1. **Session-level accumulated decisions and learnings** (the `session.decisions` and `session.learnings` dicts that were propagated up from tasks). These become `ContextItem` objects with `tier=CRITICAL` (decisions) or `tier=MAJOR` (learnings).
+
+2. **Any task-level `ContextItem` whose `tier == ImportanceTier.CRITICAL`** across all activities/tasks in the session.
+
+Duplicates are avoided the same way as existing propagation: word-overlap Jaccard > 0.8 increments count rather than adding a new entry.
+
+```python
+promoted = manager.finalize_session("session_auth")
+print(f"Promoted {promoted} items to permanent knowledge bank")
+```
+
+### How the Retriever Changes
+
+The `HierarchicalRetriever` gains a `_gather_knowledge_bank()` method, called at the top of `retrieve()` before mode-specific gathering:
+
+```python
+# retrieve() — always include KB items regardless of history mode
+kb_candidates = self._gather_knowledge_bank()
+candidates.extend(kb_candidates)
+# ... mode-specific gathering follows ...
+```
+
+`_gather_knowledge_bank()` returns all KB items with `proximity_weight = 1.0` (same as current-task items). The `CRITICAL` tier multiplier (2.0) then makes them naturally outrank non-CRITICAL candidates in scoring. They compete on semantic relevance like everything else — a permanent JWT decision won't surface when asking about CSS.
+
+Additionally, `build_context()` / `build_prompt()` prepend a **dedicated permanent section** that always shows KB items, bypassing score filtering. This ensures architectural rules always appear in prompts even if they're not the closest semantic match.
+
+### Implementation Steps (in order)
+
+#### Step 1 — `src/cogneetree/core/models.py` ⬜
+Add a module-level constant:
+```python
+KNOWLEDGE_BANK_ID: str = "__knowledge_bank__"
+```
+
+#### Step 2 — Storage backends: protect KB items from `clear()` ⬜
+
+**`src/cogneetree/storage/in_memory_storage.py`** ⬜
+In `clear()`, preserve items where `parent_id == KNOWLEDGE_BANK_ID`:
+```python
+def clear(self) -> None:
+    self.sessions.clear()
+    self.activities.clear()
+    self.tasks.clear()
+    self.items = [i for i in self.items if i.parent_id == KNOWLEDGE_BANK_ID]
+    self.current_session_id = None
+    self.current_activity_id = None
+    self.current_task_id = None
+```
+
+**`src/cogneetree/storage/sql_storage.py`** (both `SQLiteStorage` and `PostgresStorage`) ⬜
+Change the DELETE in `clear()`:
+```python
+# SQLite
+self.conn.execute(
+    "DELETE FROM context_items WHERE parent_id != ?", (KNOWLEDGE_BANK_ID,)
+)
+
+# Postgres (psycopg2)
+c.execute("DELETE FROM context_items WHERE parent_id != %s", (KNOWLEDGE_BANK_ID,))
+```
+
+**`src/cogneetree/storage/redis_storage.py`** ⬜
+In `clear()`, before deleting all keys, collect KB item keys first and restore them:
+```python
+def clear(self) -> None:
+    # Preserve KB items
+    kb_keys = [k for k in self.client.keys(self._key("item", "*"))
+               if self.client.hget(k, "parent_id") == KNOWLEDGE_BANK_ID]
+    # Delete everything
+    keys = self.client.keys(f"{self.prefix}*")
+    if keys:
+        self.client.delete(*keys)
+    # Restore KB items (re-write each hash)
+    # ... re-store each kb_key hash back using hset ...
+```
+> Note: Redis `clear()` is tricky since we delete all keys by prefix. A cleaner approach is to check parent_id during deletion, or move KB items to a separate key prefix like `{prefix}kb:item:{id}`.
+
+**`src/cogneetree/storage/async_postgres_storage.py`** ⬜
+```python
+async def clear(self) -> None:
+    async with self._pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM context_items WHERE parent_id != $1", KNOWLEDGE_BANK_ID
+        )
+        await conn.execute("TRUNCATE sessions, activities, tasks")
+    self.current_session_id = None
+    self.current_activity_id = None
+    self.current_task_id = None
+```
+
+#### Step 3 — `src/cogneetree/retrieval/hierarchical_retriever.py` ⬜
+
+Add `_gather_knowledge_bank()`:
+```python
+def _gather_knowledge_bank(self) -> List[tuple]:
+    """Always-included candidates from the permanent knowledge bank."""
+    from cogneetree.core.models import KNOWLEDGE_BANK_ID
+    kb_items = self.storage.get_items_by_task(KNOWLEDGE_BANK_ID)
+    return [(item, KNOWLEDGE_BANK_ID, "Permanent Knowledge Bank", 1.0)
+            for item in kb_items]
+```
+
+In `retrieve()`, inject before deduplication:
+```python
+# Gather mode-specific candidates
+candidates = self._gather_by_mode(...)
+
+# Always include KB candidates regardless of mode
+candidates.extend(self._gather_knowledge_bank())
+
+deduped_candidates = self._dedupe_candidates(candidates)
+```
+
+#### Step 4 — `src/cogneetree/core/context_manager.py` ⬜
+
+Add two public methods:
+
+```python
+def record_permanent(
+    self,
+    content: str,
+    tags: List[str],
+    category: ContextCategory = ContextCategory.DECISION,
+    tier: ImportanceTier = ImportanceTier.CRITICAL,
+) -> ContextItem:
+    """Write directly to the permanent knowledge bank. Survives session boundaries."""
+    from cogneetree.core.models import KNOWLEDGE_BANK_ID
+    return self.storage.add_item(
+        content, category, tags, parent_id=KNOWLEDGE_BANK_ID, tier=tier
+    )
+
+def finalize_session(self, session_id: str) -> int:
+    """Promote CRITICAL items and session-level decisions/learnings to the knowledge bank.
+
+    Call this when a session is complete to preserve its key knowledge for all
+    future sessions. Returns the count of items promoted.
+    """
+    from cogneetree.core.models import KNOWLEDGE_BANK_ID
+    session = self.storage.get_session(session_id)
+    if not session:
+        return 0
+
+    promoted = 0
+
+    # Promote session-level accumulated decisions
+    for tag, entries in session.decisions.items():
+        for entry in entries:
+            self.storage.add_item(
+                entry.content, ContextCategory.DECISION, [tag],
+                parent_id=KNOWLEDGE_BANK_ID, tier=ImportanceTier.CRITICAL,
+            )
+            promoted += 1
+
+    # Promote session-level accumulated learnings
+    for tag, entries in session.learnings.items():
+        for entry in entries:
+            self.storage.add_item(
+                entry.content, ContextCategory.LEARNING, [tag],
+                parent_id=KNOWLEDGE_BANK_ID, tier=ImportanceTier.MAJOR,
+            )
+            promoted += 1
+
+    # Promote CRITICAL-tier task items from all tasks in the session
+    for item in self.storage.get_items_by_session(session_id):
+        if item.tier == ImportanceTier.CRITICAL:
+            self.storage.add_item(
+                item.content, item.category, item.tags,
+                parent_id=KNOWLEDGE_BANK_ID, tier=ImportanceTier.CRITICAL,
+            )
+            promoted += 1
+
+    return promoted
+```
+
+Update `build_prompt()` to prepend a permanent section:
+```python
+def build_prompt(self, include_history: bool = True) -> str:
+    from cogneetree.core.models import KNOWLEDGE_BANK_ID
+    kb_items = self.storage.get_items_by_task(KNOWLEDGE_BANK_ID)
+
+    parts = []
+
+    if kb_items:
+        parts.append("=== PERMANENT KNOWLEDGE ===")
+        for item in kb_items:
+            parts.append(f"[{item.category.value.upper()}] {item.content}")
+        parts.append("")
+
+    # ... existing session / activity / task / history sections unchanged ...
+```
+
+#### Step 5 — `src/cogneetree/agent_memory.py` ⬜
+
+Add a `knowledge_bank()` method to `AgentMemory`:
+```python
+def knowledge_bank(self) -> List[ContextItem]:
+    """Return all items in the permanent knowledge bank."""
+    from cogneetree.core.models import KNOWLEDGE_BANK_ID
+    return self.storage.get_items_by_task(KNOWLEDGE_BANK_ID)
+```
+
+Update `build_context()` to prepend permanent items before scored results.
+
+#### Step 6 — Tests: `tests/test_permanent_memory.py` ⬜
+
+Write tests covering:
+- `record_permanent()` → item has `parent_id == KNOWLEDGE_BANK_ID`
+- `clear()` → KB items survive, session items do not
+- `finalize_session()` → CRITICAL task items and session decisions appear in KB
+- `finalize_session()` → duplicate promotion is idempotent (word-overlap check)
+- Retriever → KB items always appear as candidates regardless of history mode
+- `build_prompt()` → permanent section always present when KB is non-empty
+
+Contract test addition in `tests/test_storage_contract.py`:
+```python
+async def test_clear_preserves_knowledge_bank(self, any_storage):
+    from cogneetree.core.models import KNOWLEDGE_BANK_ID
+    await any_storage.add_item("Permanent rule", ContextCategory.DECISION,
+                               ["arch"], parent_id=KNOWLEDGE_BANK_ID)
+    await any_storage.create_session("s1", "Ask", "Plan")
+    await any_storage.add_item("Session item", ContextCategory.ACTION, ["tag"])
+
+    await any_storage.clear()
+
+    kb_items = await any_storage.get_items_by_task(KNOWLEDGE_BANK_ID)
+    assert len(kb_items) == 1
+    assert kb_items[0].content == "Permanent rule"
+```
+
+### Design Decisions & Trade-offs
+
+| Decision | Rationale |
+|----------|-----------|
+| `parent_id = "__knowledge_bank__"` as sentinel | No schema changes; works with all backends via existing `get_items_by_task` |
+| `proximity_weight = 1.0` for KB items | Lets tier multiplier (2.0 for CRITICAL) drive priority; KB items don't unconditionally dominate |
+| Always-show section in `build_prompt()` | Permanent rules should appear even when not semantically closest match |
+| `finalize_session()` is explicit, not automatic | Agent controls when a session is "done"; avoids premature promotion |
+| Only `CRITICAL` task items promoted by `finalize_session()` | `MAJOR`/`MINOR` items stay in history, retrievable via `ALL_SESSIONS` — KB is reserved for truly permanent knowledge |
+| Redis `clear()` complexity | Consider giving KB items a separate key prefix (`{prefix}kb:item:{id}`) to simplify the preserve-on-clear logic |
+
+---
+
 ## See Also
 
 - [README.md](README.md) - Overview and features
