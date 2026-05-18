@@ -1,142 +1,76 @@
-# 🌳 cogneetree
+# Cogneetree
 
-**Hierarchical context memory for AI agents**
+Distributed decision memory for agentic programming.
 
-A lightweight, flexible Python library for managing hierarchical context in AI applications. Build persistent memory across projects with Session → Activity → Task hierarchies, giving agents access to past decisions, learnings, and patterns.
+Cogneetree is restarting around one simple protocol:
 
-## ✨ Key Features
+> Agents propose decisions. A scoped leader admits one active decision per area.
+> Accepted decisions become Markdown. Competing proposals are rejected as stale
+> and the agent must re-evaluate from the latest state.
 
-- **Hierarchical Memory** - Session → Activity → Task structure mirrors how work actually happens
-- **Multi-Scope Retrieval** - Micro (focused), Balanced (practical), Macro (learning) searches
-- **Transparent Reasoning** - See why each piece of context was selected
-- **Flexible Storage** - In-memory (default) plus SQLite, PostgreSQL, Redis, MongoDB
-- **Tag-Based Organization** - Flexible categorization that grows with your work
-- **Temporal Awareness** - Automatic timestamp tracking favors recent learnings
-- **LLM-Ready** - Built-in prompt building with integrated context injection
-- **Minimal Dependencies** - Core library has zero external dependencies
+This repo intentionally keeps the implementation small. Markdown is the readable
+source of truth. JSONL is the event log. Python is the reference
+implementation.
 
-## 🚀 Quick Start
+## Why
 
-### Installation
+Distributed agents do not need a magical conflict resolver first. They need a
+simple way to avoid polluting shared memory:
+
+- one decision area
+- one active accepted decision
+- one leader admitting writes
+- stale proposals rejected with latest state
+- accepted decisions stored as human-readable Markdown
+
+## Example
 
 ```bash
-pip install cogneetree
+cogneetree --memory memory init
+
+cogneetree --memory memory propose-decision auth/session-storage \
+  --content "Use Redis for session storage." \
+  --rationale "Redis supports TTLs and fast lookup." \
+  --agent backend-agent
+
+cogneetree --memory memory decisions show auth/session-storage
 ```
 
-### Basic Usage
+If another agent proposes a different decision for the same area, it gets:
 
-```python
-from cogneetree import ContextManager, AgentMemory
+```text
+REJECTED_STALE auth/session-storage
 
-# Initialize context storage
-manager = ContextManager()
-
-# Create a session (project)
-manager.create_session("proj_1", "Build API auth", "JWT-based authentication")
-manager.create_activity("a1", "proj_1", "Understand JWT", ["jwt", "auth"], "learner", "core", "research")
-manager.create_task("t1", "a1", "Learn JWT structure", ["jwt"])
-
-# Record what you learn and decide
-manager.record_learning("JWT has three parts: header.payload.signature", ["jwt", "structure"])
-manager.record_decision("Use HS256 for symmetric signing", ["jwt", "algorithm"])
-
-# Later, get memory for your current task
-manager.create_task("t2", "a1", "Implement JWT validation", ["jwt", "validation"])
-memory = AgentMemory(manager.storage, current_task_id="t2")
-
-# Query past knowledge - one line!
-context = memory.recall("JWT validation")
-for item in context:
-    print(f"{item.category}: {item.content}")
+An active decision already exists for this area.
+Re-evaluate using the latest accepted state.
 ```
 
-## 📚 Documentation
+## Repository Shape
 
-| Document | Purpose |
-|----------|---------|
-| **[DOCUMENTATION.md](DOCUMENTATION.md)** | Navigation guide - find what you need |
-| **[AGENT_MEMORY.md](AGENT_MEMORY.md)** | Guide for AI agents - API reference, scopes, integration examples |
-| **[CLAUDE.md](CLAUDE.md)** | Development philosophy - architecture, design decisions, best practices |
-| **[examples/](examples/)** | Real-world usage examples and integration patterns |
+```text
+src/cogneetree/
+  protocol.py   # dataclasses and statuses
+  store.py      # Markdown and JSONL persistence
+  leader.py     # one-active-decision admission logic
+  cli.py        # minimal CLI
 
-## 🏗️ How It Works
+docs/
+  DISTRIBUTED_IMPLEMENTATION.md
 
-### Three-Level Hierarchy
-
-Work is organized into three natural levels:
-
-```
-Session (Project)
-  ├── Activity (Work Area)
-  │   └── Task (Atomic Work Item)
-  │       ├── Actions (what you did)
-  │       ├── Decisions (why you chose that)
-  │       ├── Learnings (what you discovered)
-  │       └── Results (what was accomplished)
+tests/
+  test_decision_protocol.py
 ```
 
-### Retrieval Scopes
+## Development
 
-When an agent needs context, it chooses a scope:
-
-- **Micro**: This task only (focused work)
-- **Balanced**: Current task + recent history (90 days) - **default**
-- **Macro**: All projects equally (pattern learning)
-
-### Why This Matters
-
-Instead of agents starting fresh each project, they build persistent memory:
-
-```python
-# Project 1: Agent learns
-manager.record_decision("Use HS256 for JWT", ["jwt"])
-
-# Project 2: Agent finds this automatically
-context = memory.recall("JWT signing")  # Finds HS256 decision!
+```bash
+poetry install
+poetry run pytest
 ```
 
-Over time, agents develop genuine expertise that compounds across projects.
+## Current Status
 
-## 🎯 Use Cases
-
-- **AI Coding Assistants** - Remember architecture decisions, patterns, and lessons
-- **DevOps Automation** - Track incident responses and proven solutions
-- **Customer Support** - Maintain context across conversations and cases
-- **Research Tools** - Connect findings and build on past discoveries
-- **Content Creation** - Learn from patterns in successful content
-
-## 🔧 Storage Options
-
-By default, Cogneetree uses in-memory storage. For persistence:
-
-```python
-from cogneetree import ContextManager
-from cogneetree.storage.in_memory_storage import InMemoryStorage
-
-# In-memory (default, per-session)
-manager = ContextManager()
-
-# For persistent storage, implement ContextStorageABC or extend InMemoryStorage
-```
-
-See [CLAUDE.md](CLAUDE.md#storage-backend-implementation) for custom storage implementation.
-
-## 📦 What's Included
-
-- **ContextManager** - Simple interface for creating and managing context
-- **AgentMemory** - Frictionless memory access for AI agents (recommended)
-- **HierarchicalRetriever** - Advanced retrieval with 4 history modes
-- **InMemoryStorage** - Fast, default storage backend
-- **RetrievalConfig** - Fine-grained control over search behavior
-
-## 🤝 Contributing
-
-Contributions welcome! Please see our development guide in [CLAUDE.md](CLAUDE.md#development-commands).
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) for details
-
----
-
-**Start with [AGENT_MEMORY.md](AGENT_MEMORY.md) if you're building agents. Start with [CLAUDE.md](CLAUDE.md) if you're extending the library.**
+This is a fresh, small reference implementation. Raft/lease-based leader
+election is documented but not implemented yet. The first production-grade
+coordination target should be an external coordinator such as etcd, Consul, or a
+Kubernetes Lease adapter before building custom Raft internals.
