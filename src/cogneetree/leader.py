@@ -12,13 +12,13 @@ from cogneetree.protocol import (
     new_id,
     utc_now,
 )
-from cogneetree.store import DecisionFileStore
+from cogneetree.ports import DecisionStore
 
 
 class MemoryLeader:
     """Admit one active decision per area."""
 
-    def __init__(self, leader_id: str, store: DecisionFileStore) -> None:
+    def __init__(self, leader_id: str, store: DecisionStore) -> None:
         self.leader_id = leader_id
         self.store = store
 
@@ -102,4 +102,3 @@ def parse_version(markdown: str) -> int | None:
         if line.startswith("Version:"):
             return int(line.removeprefix("Version:").strip())
     return None
-

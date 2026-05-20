@@ -23,6 +23,9 @@ For each decision area:
 - Do not add UI, vector search, storage backends, or framework adapters until the
   protocol is stable.
 - Do not reintroduce the old hierarchy/retrieval architecture.
+- Do not have any methods or functions exceed more that 50 lines
+- Follow SOLID prinviples.
+- Apply Well known patterns like GOF, POSA, Implementation Patterns and PoEAA
 
 ## Current Shape
 

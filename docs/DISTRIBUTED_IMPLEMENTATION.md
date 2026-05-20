@@ -1,109 +1,135 @@
 # Distributed Implementation
 
-Keep Cogneetree small.
-
-## Rule
+Cogneetree's distributed core is intentionally small:
 
 ```text
-one decision area
-one active accepted decision
-one leader admits writes
-Markdown is accepted state
-JSONL is audit history
-stale proposals retry with latest state
+submit proposal
+  -> pending_decisions
+  -> leased leader
+  -> accepted_contexts or rejected_decisions
+  -> decision_events
 ```
 
-## Flow
+The protocol is not a custom consensus system. SQLite currently provides the
+local DB-backed implementation. A future Postgres adapter should preserve the
+same behavior with stronger production concurrency primitives.
+
+## Leader Lease
+
+`leader_lease` stores one active lease:
 
 ```text
-agent proposes decision
-leader checks area
-
-if area has no decision:
-  accept
-  write memory/decisions/<area>.md
-  append accepted event
-
-if area already has a decision:
-  reject_stale
-  append rejected event
-  store audit JSON
-  return latest Markdown to agent
+lease_name
+node_id
+lease_epoch
+renewed_at
+expires_at
 ```
 
-Different areas do not conflict.
+Only the current lease holder can claim and resolve pending proposals. The epoch
+acts as a fencing token so an old leader cannot continue writing after another
+node takes over.
 
-## Files
+## Pending Proposals
+
+Agents submit proposals into `pending_decisions`.
 
 ```text
-memory/
-  decisions/**/*.md
-  events/decisions.jsonl
-  audit/rejected/*.json
+pending -> claimed -> accepted
+pending -> claimed -> rejected_stale
 ```
 
-## Python Core
+The leader processes proposals in created order.
+
+## Materialized Context
+
+Accepted context is written to `accepted_contexts`.
+
+The primary lookup key is:
+
+```text
+context_key
+```
+
+Path-like keys also create a walkable tree:
+
+```text
+auth/session-storage
+auth/token-policy
+project/runtime
+```
+
+Readers can use exact lookup, children, subtree, or lexical search. Readers do
+not decide acceptance.
+
+## Future Context Graph
+
+The distributed read model should support graph relationships over accepted
+contexts:
+
+```text
+auth/session-storage depends_on project/runtime
+api/error-format related_to frontend/error-handling
+auth/token-policy conflicts_with auth/session-storage
+```
+
+The tree remains the identity and location model. Graph edges are relationships
+between accepted contexts and should be created only by leader-controlled
+materialization.
+
+## Current API
 
 ```python
-from cogneetree import DecisionFileStore, DecisionProposal, MemoryLeader
+from cogneetree import DatabaseContextMemory, DatabaseLeaderWorker, ProposalInput, SQLiteDecisionLog
 
-store = DecisionFileStore("memory")
-leader = MemoryLeader("node-a", store)
+log = SQLiteDecisionLog("memory.db")
+memory = DatabaseContextMemory(log)
+worker = DatabaseLeaderWorker("node-a", log)
 
-resolution = leader.review(
-    DecisionProposal(
+proposal_id = memory.submit_context(
+    ProposalInput(
         area="auth/session-storage",
         content="Use Redis for session storage.",
-        rationale="TTL support and fast lookup.",
+        rationale="TTL support.",
         agent_id="backend-agent",
     )
 )
+
+worker.claim_leadership()
+resolution = worker.process_next()
+markdown = memory.get_context("auth/session-storage")
 ```
 
-## CLI
+## Future Transports
 
-```bash
-cogneetree --memory memory init
-
-cogneetree --memory memory propose-decision auth/session-storage \
-  --content "Use Redis for session storage." \
-  --rationale "TTL support and fast lookup." \
-  --agent backend-agent
-
-cogneetree --memory memory decisions show auth/session-storage
-```
-
-## Raft / Consensus
-
-Do not put memory logic inside Raft.
-
-Raft should only replicate commands:
-
-```python
-@dataclass(frozen=True)
-class RaftCommand:
-    command_id: str
-    command_type: str  # "propose_decision"
-    payload: dict
-    submitted_by: str
-```
-
-Committed command:
+HTTP, gRPC, and MCP should be thin adapters:
 
 ```text
-Raft log commits command
-  -> MemoryLeader.review(proposal)
-  -> Markdown/event files updated
+transport request
+  -> public API
+  -> decision log
 ```
 
-For v1, use a single local leader. For distributed v1, prefer etcd, Consul, or
-Kubernetes Lease for leader election. Build custom Raft only after the protocol
-is proven.
+They must not duplicate protocol rules.
 
-## Next Steps
+## Future Postgres Adapter
 
-1. Keep this protocol stable.
-2. Add MCP tools over the same API.
-3. Add exact-area and Markdown lexical recall.
-4. Add an external leader-election adapter.
-5. Add explicit `supersede_decision` when changing an existing area is needed.
+The Postgres implementation should use:
+
+```text
+row locks or atomic updates for leader lease
+FOR UPDATE SKIP LOCKED for pending proposal claims
+INSERT ... ON CONFLICT for accepted context
+```
+
+It should pass the same behavior tests as the SQLite implementation.
+
+## Do Not Add Yet
+
+- custom Raft
+- direct agent writes to accepted context
+- vector search in the write path
+- framework-specific adapters inside core protocol modules
+
+For planned production work, see
+[Implementation Roadmap](IMPLEMENTATION_ROADMAP.md).
