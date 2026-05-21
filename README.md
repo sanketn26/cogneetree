@@ -1,28 +1,29 @@
 # Cogneetree
 
-Distributed decision memory for agentic programming.
+Governed residual memory for autonomous agents.
 
 Cogneetree is restarting around one simple protocol:
 
-> Agents propose decisions. A scoped leader admits one active decision per area.
-> Accepted decisions become Markdown. Competing proposals are rejected as stale
-> and the agent must re-evaluate from the latest state.
+> Agents propose memory changes. A scoped leader admits one active accepted
+> Markdown state per organization, area, and node. Competing proposals are
+> rejected as stale and the agent must re-evaluate from the latest state.
 
 This repo intentionally keeps the implementation small. The file-backed path
-stores accepted decisions as Markdown and audit events as JSONL. The DB-backed
-path stores proposals in a pending log, resolves them through a leased leader,
-and exposes accepted context as a materialized tree.
+stores accepted memory as Markdown and audit events as JSONL. The DB-backed path
+stores proposals in a pending log, resolves them through a leased leader, and
+exposes accepted context as a materialized tree.
 
 ## Why
 
-Distributed agents do not need a magical conflict resolver first. They need a
-simple way to avoid polluting shared memory:
+Autonomous agents need durable memory, but they should not own the shared truth
+directly. Cogneetree gives them a governed, human-readable knowledge tree:
 
-- one decision area
-- one active accepted decision
-- one leader admitting writes
+- organization, area, and node identity
+- one active accepted Markdown state per node
+- one scoped leader admitting writes
 - stale proposals rejected with latest state
-- accepted decisions stored as human-readable Markdown
+- accepted updates recorded with attribution and reason
+- derived indexes for lookup, not as source of truth
 
 ## Example
 
@@ -62,10 +63,9 @@ src/cogneetree/
   cli.py        # minimal CLI
 
 docs/
-  CONTEXT_MEMORY_SYSTEM.md
-  DISTRIBUTED_IMPLEMENTATION.md
   GUIDED_IMPLEMENTATION_GUIDE.md
-  IMPLEMENTATION_ROADMAP.md
+  ROADMAP.md
+  VALIDATION_AND_TESTING.md
 
 tests/
   test_decision_protocol.py
@@ -75,10 +75,9 @@ tests/
 
 ## Design Docs
 
-- [Context Memory System](docs/CONTEXT_MEMORY_SYSTEM.md)
 - [Guided Implementation Guide](docs/GUIDED_IMPLEMENTATION_GUIDE.md)
-- [Implementation Roadmap](docs/IMPLEMENTATION_ROADMAP.md)
-- [Distributed Implementation](docs/DISTRIBUTED_IMPLEMENTATION.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Validation And Testing](docs/VALIDATION_AND_TESTING.md)
 
 ## Development
 
@@ -100,5 +99,6 @@ Implemented today:
 - accepted materialized context tree
 - stale rejection audit
 
-Still planned: schema migrations, supersede/update, worker daemon, HTTP/gRPC,
-Postgres, MCP tools, and semantic recall.
+Still planned: organization boundaries, versioned updates, change sets,
+snapshots, node metadata, tombstones, schema migrations, graph relationships,
+worker daemon, transport adapters, and derived indexes.

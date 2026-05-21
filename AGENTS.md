@@ -35,7 +35,9 @@ src/cogneetree/store.py
 src/cogneetree/leader.py
 src/cogneetree/cli.py
 tests/test_decision_protocol.py
-docs/DISTRIBUTED_IMPLEMENTATION.md
+docs/GUIDED_IMPLEMENTATION_GUIDE.md
+docs/ROADMAP.md
+docs/VALIDATION_AND_TESTING.md
 ```
 
 ## Python Style
@@ -62,4 +64,3 @@ The important behaviors:
 - different areas are accepted independently
 - rejected proposals do not alter accepted Markdown
 - events and rejection audit files are written
-

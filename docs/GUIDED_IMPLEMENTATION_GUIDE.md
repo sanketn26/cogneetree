@@ -1,199 +1,317 @@
 # Guided Implementation Guide
 
-This guide explains the implemented APIs and where new work should attach.
+Cogneetree is a governed, human-readable LLM wiki for autonomous agents.
+It gives agents durable residual memory without letting them mutate shared
+memory directly.
 
-For pending work and acceptance criteria, use
-[Implementation Roadmap](IMPLEMENTATION_ROADMAP.md).
+For sequence and acceptance criteria, use [ROADMAP.md](ROADMAP.md). For the
+validation contract, use [VALIDATION_AND_TESTING.md](VALIDATION_AND_TESTING.md).
 
-## Module Map
-
-```text
-src/cogneetree/
-  protocol.py       # base proposal, accepted decision, resolution records
-  db_protocol.py    # DB lease, pending status, context tree records
-  ports.py          # storage protocol for file-backed leader
-  store.py          # file-backed Markdown and JSONL store
-  leader.py         # one-active-decision admission logic
-  memory.py         # standalone file-backed API
-  distributed.py    # command/reader boundaries for remote adapters
-  sqlite_log.py     # SQLite proposal log and materialized context tree
-  db_memory.py      # DB-backed public API and leader worker
-  cli.py            # minimal CLI for file-backed mode
-```
-
-## File-Backed API
-
-Use this for local mode and protocol-level tests.
-
-```python
-from cogneetree import DecisionFileStore, ProposalInput, StandaloneContextMemory
-
-memory = StandaloneContextMemory("local", DecisionFileStore("memory"))
-memory.initialize()
-
-resolution = memory.propose_decision(
-    ProposalInput(
-        area="api/error-format",
-        content="Use RFC 7807 problem details.",
-        rationale="Standard JSON error shape.",
-        agent_id="api-agent",
-    )
-)
-
-markdown = memory.get_decision("api/error-format")
-areas = memory.list_decisions()
-```
-
-The file-backed path writes:
+## Core Invariant
 
 ```text
-memory/decisions/**/*.md
-memory/events/decisions.jsonl
-memory/audit/rejected/*.json
+agents read accepted Markdown
+agents submit proposals
+one leader admits writes for a scope
+accepted state is one Markdown node per org + area + node
+proposals, acceptances, rejections, and updates are JSONL audit events
+indexes are derived read models
 ```
 
-## DB-Backed API
+Agents may be autonomous in work, but they are not sovereign over shared memory.
 
-Use this for the simplified distributed core.
-
-```python
-from cogneetree import DatabaseContextMemory, DatabaseLeaderWorker, ProposalInput, SQLiteDecisionLog
-
-log = SQLiteDecisionLog("memory.db")
-memory = DatabaseContextMemory(log)
-worker = DatabaseLeaderWorker("node-a", log)
-```
-
-Submit a context proposal:
-
-```python
-proposal_id = memory.submit_context(
-    ProposalInput(
-        area="auth/session-storage",
-        content="Use Redis for session storage.",
-        rationale="TTL support.",
-        agent_id="backend-agent",
-    )
-)
-```
-
-Resolve pending proposals:
-
-```python
-if worker.claim_leadership():
-    resolution = worker.process_next()
-```
-
-Read materialized context:
-
-```python
-markdown = memory.get_context("auth/session-storage")
-resolution = memory.get_resolution(proposal_id)
-children = memory.list_children("auth")
-subtree = memory.list_subtree("auth")
-matches = memory.search_contexts("redis")
-```
-
-## DB Tables
-
-SQLite currently creates:
+## Concept Model
 
 ```text
-leader_lease          # active node lease and epoch
-pending_decisions     # submitted proposals
-accepted_contexts     # materialized context tree
-rejected_decisions    # stale proposal audit
-decision_events       # append-only audit stream
+organization
+  area
+    content node
+      accepted Markdown
+      versions
+      audit events
 ```
 
-## Context Tree
-
-The tree is derived from `context_key`.
+Use these identities:
 
 ```text
-auth/session-storage
-auth/token-policy
-api/error-format
+org_id       # tenant, team, company, or governance boundary
+area_id      # domain boundary, such as rbac or billing
+node_id      # stable node identity inside the area
+proposal_id  # immutable proposed change identity
+version      # accepted state version
 ```
 
-becomes:
+The invariant is:
 
 ```text
-auth
-  auth/session-storage
-  auth/token-policy
-api
-  api/error-format
+one active accepted state per org_id + area_id + node_id
 ```
 
-`list_children(None)` returns top-level folder nodes. `list_children("auth")`
-returns immediate children. `list_subtree("auth")` returns accepted context rows
-under that prefix.
+Do not bake `org_id` into `node_id`. Let `rbac.acls` mean the same conceptual
+node in different organizations.
 
-## Future Graph Relationships
+## Human-Readable State
 
-The next read-model expansion should add graph edges between accepted contexts.
+Accepted memory is Markdown with small frontmatter.
 
-The tree remains the canonical location model:
+```markdown
+---
+id: rbac.acls
+org_id: acme
+area: rbac
+title: ACLs
+node_type: policy
+authority: normative
+status: accepted
+version: 5
+updated_at: 2026-05-21T10:16:01Z
+updated_by: agent-auth-reviewer
+accepted_by: rbac-leader
+change_reason: Contractor access reduced after policy update.
+review_after: 2026-08-21
+aliases:
+  - access control lists
+  - authorization grants
+tags:
+  - rbac
+  - access
+---
+
+# ACLs
+
+Accepted access control policy lives here.
+```
+
+Keep JSON out of the normal reading path. Humans and agents should read accepted
+Markdown first.
+
+## Node Types
+
+Start with a small enum:
 
 ```text
-context_key = auth/session-storage
+policy
+decision
+procedure
+fact
+runbook
+lesson
+interface_contract
+open_question
 ```
 
-Graph edges describe relationships:
+Agents should treat node types differently. A `policy` can constrain behavior.
+A `lesson` is guidance. An `open_question` is not accepted truth.
+
+## Authority Levels
+
+Use authority to tell agents how strongly to rely on a node.
 
 ```text
-auth/session-storage depends_on project/runtime
-auth/session-storage related_to auth/token-policy
-auth/token-policy conflicts_with auth/session-storage
+normative      # binding unless current instructions override it
+advisory       # useful guidance
+observational  # historical or empirical note
 ```
 
-Expected table shape:
+Authority is separate from node type. A procedure can be normative; a lesson is
+usually advisory.
+
+## Write Model
+
+The write path remains centralized:
 
 ```text
-context_edges
-  edge_id
-  from_context_key
-  to_context_key
-  edge_type
-  rationale
-  created_by
-  created_at
+agent
+  -> proposal
+  -> pending log
+  -> scoped leader
+  -> accepted Markdown or stale rejection
+  -> audit event
+  -> derived index refresh
 ```
 
-Expected APIs:
+Every accepted update must answer:
 
-```python
-edges = memory.list_edges("auth/session-storage")
-dependencies = memory.list_dependencies("auth/session-storage")
-dependents = memory.list_dependents("project/runtime")
-bundle = memory.get_context_neighborhood("auth/session-storage", depth=1)
+```text
+what changed
+who proposed it
+who accepted it
+why it changed
+which version it replaced
+which sources justified it
 ```
 
-Graph edges should be materialized by the leader as part of accepted proposals or
-supersede operations. Readers may traverse edges, but readers must not create
-accepted relationships directly.
+A future long-running worker may wrap this flow as a daemon that claims a
+leader lease, renews it, and processes pending proposals. Keep that worker as
+orchestration around the public memory API, not as a second protocol path.
 
-## Distributed Adapter Boundary
+## Version History
 
-Network transports should attach at the API boundary:
+Keep version history as append-only audit and snapshots. Do not build a heavy
+VCS inside the product.
+
+```text
+wiki/
+  acme/
+    rbac/
+      acls.md
+audit/
+  acme/
+    rbac.acls.jsonl
+snapshots/
+  acme/
+    rbac/
+      acls/
+        v0004.md
+        v0005.md
+```
+
+An accepted update should create an audit event:
+
+```json
+{"type":"accepted","org_id":"acme","area":"rbac","node_id":"rbac.acls","proposal_id":"p_123","from_version":4,"to_version":5,"proposed_by":"agent-auth-reviewer","accepted_by":"rbac-leader","reason":"Contractor access reduced after policy update.","timestamp":"2026-05-21T10:16:01Z"}
+```
+
+Snapshots are enough for the first implementation. Generated diffs can be added
+later as a read model.
+
+## Change Sets
+
+A change set groups one or more node updates under one reason.
+
+Use it when one real-world event touches multiple nodes:
+
+```text
+rbac.auth
+rbac.acls
+rbac.authorizations
+```
+
+The leader may accept a change set only when all included node versions still
+match their expected base versions. If one node is stale, reject the change set.
+
+## Staleness
+
+Updates must include the expected current version.
+
+```text
+missing node on create -> accept if no accepted state exists
+missing node on update -> reject_missing_current
+expected version mismatch -> reject_stale
+expected version match -> accept version + 1
+```
+
+Rejected proposals must not alter accepted Markdown.
+
+## Access Scope
+
+Organization is a governance boundary. Area is the first practical policy
+boundary inside an organization.
+
+Track at least:
+
+```text
+read_scope
+propose_scope
+accept_scope
+```
+
+Enforcement can stay simple initially, but the protocol should carry the fields.
+
+## Links And Conflicts
+
+The tree is for location. Edges are for meaning.
+
+```text
+depends_on
+related_to
+supersedes
+conflicts_with
+```
+
+Do not replace the tree with a graph. Graph edges connect accepted nodes and are
+created only by leader-admitted updates.
+
+Contradictions should be explicit:
+
+```yaml
+conflicts_with:
+  - billing.contractor_access
+supersedes:
+  - rbac.legacy_acl_policy
+```
+
+## Tombstones
+
+Deletion is an accepted state, not absence.
+
+```markdown
+---
+id: rbac.old_acl_policy
+status: retired
+retired_reason: Replaced by rbac.acls.
+superseded_by:
+  - rbac.acls
+---
+
+# Retired: Old ACL Policy
+```
+
+Agents need to know when knowledge was intentionally retired.
+
+## Lookup And Indexing
+
+The source of truth is the tree.
+
+```text
+Markdown tree = accepted knowledge
+JSONL audit = provenance and history
+manifest = derived navigation cache
+inverted index = derived exact lookup cache
+semantic index = optional discovery cache, deferred
+```
+
+Start with structural lookup by `org_id + area_id + node_id`. Add a boring
+manifest and lexical index before semantic search.
+
+Semantic search may suggest candidate nodes. It must not decide truth.
+
+## Current Code Attachment Points
+
+Until Phase 1 lands, modules still use the earlier decision/context naming.
+Evolve them without reintroducing old retrieval architecture.
+
+Avoid relying on a hand-maintained file inventory in this guide. Use
+`rg --files src/cogneetree` for the exact current module list, then attach new
+work by responsibility:
+
+- protocol records and statuses live with the protocol model
+- leader admission logic owns accept/reject decisions
+- stores and logs own persistence, snapshots, and audit events
+- public memory APIs own reads, proposal submission, and worker boundaries
+- CLI and future transports stay thin over public APIs
+
+Prefer renaming concepts gradually:
+
+```text
+area/context_key -> org + area + node
+decision -> accepted node version
+decision_events -> audit events
+accepted_contexts -> accepted node states
+```
+
+## Adapter Boundary
+
+Network and tool adapters should be thin:
 
 ```text
 HTTP/gRPC/MCP
-  -> DatabaseContextMemory
-  -> SQLiteDecisionLog or future PostgresDecisionLog
+  -> public memory API
+  -> log/store
 ```
 
-Worker processes should attach here:
-
-```text
-worker daemon
-  -> DatabaseLeaderWorker
-  -> decision log
-```
-
-Adapters must not duplicate stale rejection, acceptance, or materialization
-rules.
+Adapters must not duplicate proposal admission, stale rejection, versioning, or
+materialization rules.
 
 ## Tests
 
@@ -203,23 +321,14 @@ Run:
 poetry run pytest
 ```
 
-Important coverage:
+Important protocol coverage:
 
-- file-backed first proposal acceptance
-- stale rejection
-- independent context keys
-- DB leader lease ownership
-- DB lease expiry takeover
-- pending proposal resolution
-- materialized tree reads
-- lexical search
-
-## Rules to Preserve
-
-- agents submit proposals instead of writing accepted context
-- only the leader resolves pending proposals
-- accepted context is addressed by `context_key`
-- stale proposals do not mutate accepted context
-- materialized views are read models
-- graph edges are relationships, not context identity
-- semantic search, MCP, HTTP, and gRPC must call public APIs
+- first proposal for a node is accepted
+- second proposal for the same base version is rejected as stale
+- different nodes are accepted independently
+- accepted update increments version
+- stale update does not alter accepted Markdown
+- proposal, acceptance, rejection, and supersede events are written
+- snapshots are written for accepted versions
+- tombstones are accepted states
+- derived indexes can be rebuilt from Markdown and audit
