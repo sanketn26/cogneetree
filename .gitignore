@@ -1,33 +1,17 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
+# Go
+*.exe
+*.exe~
+*.dll
 *.so
-.Python
-env/
-venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
+*.dylib
+*.test
+*.out
+vendor/
+cogneetree
+/bin/
+/dist/
+coverage.out
+coverage.html
 
 # IDE
 .vscode/
@@ -39,8 +23,16 @@ htmlcov/
 # cogneetree specific
 .cogneetree/
 *.db
+data/
+wiki/
+audit/
+snapshots/
 
 # OS
 .DS_Store
 Thumbs.db
-.venv
+
+# Local config
+*.env
+*.env.local
+config.local.yaml
